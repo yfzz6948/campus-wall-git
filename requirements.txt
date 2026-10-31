@@ -1,0 +1,6 @@
+# 校园信息墙 v5 依赖（Python 3.10+）
+# 数据库：MariaDB 10.5+ / MySQL 8.0+（需另行在数据库服务器安装，不在 pip 内）
+Flask>=3.0,<4.0
+Markdown>=3.5
+bleach>=6.0
+PyMySQL>=1.1

@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}编辑题目 · 校园信息墙{% endblock %}
+
+{% block content %}
+<header class="topbar sticky-top">
+  <div class="app-container d-flex align-items-center px-3 py-2">
+    <span class="fw-bold fs-5">编辑题目</span>
+    <a class="btn btn-outline-secondary btn-sm ms-auto"
+       href="{{ url_for('admin_questions') }}">返回题库</a>
+  </div>
+</header>
+
+<main class="app-container px-2 px-sm-3 py-3">
+  <div class="card rounded-4 border-0 post-card">
+    <div class="card-body p-3">
+      <form method="post" action="{{ url_for('admin_question_update', qid=q.id) }}">
+        <div class="mb-2">
+          <label class="form-label small mb-1">题干</label>
+          <input type="text" name="question_text" class="form-control form-control-sm"
+                 maxlength="200" value="{{ q.question_text }}" required>
+        </div>
+        <div class="row g-2">
+          <div class="col-6">
+            <label class="form-label small mb-1">选项 A</label>
+            <input type="text" name="option_a" class="form-control form-control-sm"
+                   maxlength="100" value="{{ q.option_a }}" required>
+          </div>
+          <div class="col-6">
+            <label class="form-label small mb-1">选项 B</label>
+            <input type="text" name="option_b" class="form-control form-control-sm"
+                   maxlength="100" value="{{ q.option_b }}" required>
+          </div>
+          <div class="col-6">
+            <label class="form-label small mb-1">选项 C</label>
+            <input type="text" name="option_c" class="form-control form-control-sm"
+                   maxlength="100" value="{{ q.option_c }}" required>
+          </div>
+          <div class="col-6">
+            <label class="form-label small mb-1">选项 D</label>
+            <input type="text" name="option_d" class="form-control form-control-sm"
+                   maxlength="100" value="{{ q.option_d }}" required>
+          </div>
+        </div>
+        <div class="mt-2">
+          <label class="form-label small mb-1">正确答案</label>
+          <select name="correct_answer"
+                  class="form-select form-select-sm w-auto d-inline-block">
+            {% for opt in ['A', 'B', 'C', 'D'] %}
+            <option value="{{ opt }}" {% if q.correct_answer == opt %}selected{% endif %}>
+              {{ opt }}
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="d-flex gap-2 mt-3">
+          <button type="submit" class="btn btn-wechat btn-sm">保存修改</button>
+          <a class="btn btn-outline-secondary btn-sm"
+             href="{{ url_for('admin_questions') }}">取消</a>
+        </div>
+      </form>
+    </div>
+  </div>
+</main>
+{% endblock %}

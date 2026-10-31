@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}管理员管理 · 校园信息墙{% endblock %}
+
+{% block content %}
+<header class="topbar sticky-top">
+  <div class="app-container d-flex align-items-center px-3 py-2">
+    <span class="fw-bold fs-5">管理员管理</span>
+    <a class="btn btn-outline-secondary btn-sm ms-auto"
+       href="{{ url_for('index') }}">返回首页</a>
+  </div>
+</header>
+
+<main class="app-container px-2 px-sm-3 py-3">
+
+  <div class="alert alert-light border small py-2 mb-3">
+    输入对方的 11 位学号即可提拔为管理员（对方必须已注册过）。
+    新管理员<strong>重新登录一次</strong>后会出现管理入口；取消管理员则<strong>即时生效</strong>。
+  </div>
+
+  <!-- 现任管理员 -->
+  <h6 class="text-muted px-1 mb-2">现任管理员（共 {{ admins|length }} 人）</h6>
+  {% for a in admins %}
+  <div class="card rounded-4 border-0 mb-2 post-card">
+    <div class="card-body p-3 d-flex align-items-center">
+      <div class="flex-grow-1">
+        <div class="fw-semibold">
+          {{ a.grade }}{{ a.class_name }} {{ a.name }}
+          {% if a.student_id == super_admin_id %}
+          <span class="badge text-bg-danger ms-1">超级管理员</span>
+          {% endif %}
+          {% if a.id == session['user_id'] %}
+          <span class="badge text-bg-secondary ms-1">当前登录</span>
+          {% endif %}
+        </div>
+        <div class="text-muted small">学号：{{ a.student_id }}</div>
+      </div>
+      {% if a.student_id != super_admin_id and a.id != session['user_id'] %}
+      <form method="post" action="{{ url_for('admin_remove', uid=a.id) }}"
+            onsubmit="return confirm('确定取消 {{ a.name }} 的管理员身份吗？');">
+        <button type="submit" class="btn btn-outline-danger btn-xs">取消管理员</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+  {% else %}
+  <div class="text-center text-muted py-4">暂无管理员。</div>
+  {% endfor %}
+
+  <!-- 提拔新管理员 -->
+  <h6 class="text-muted px-1 mt-4 mb-2">提拔新管理员</h6>
+  <div class="card rounded-4 border-0 post-card">
+    <div class="card-body p-3">
+      <form method="post" action="{{ url_for('admin_add') }}">
+        <label class="form-label small mb-1">对方学号（11 位纯数字）</label>
+        <div class="input-group input-group-sm">
+          <input type="text" name="student_id" class="form-control"
+                 inputmode="numeric" pattern="\d{11}" maxlength="11"
+                 placeholder="例如 24710202099" required>
+          <button type="submit" class="btn btn-wechat">设为管理员</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</main>
+{% endblock %}

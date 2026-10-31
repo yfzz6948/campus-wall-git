@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}登录 · 校园信息墙{% endblock %}
+
+{% block content %}
+<div class="app-container d-flex align-items-center min-vh-100 px-3 py-4">
+    <div class="card rounded-4 shadow-sm border-0 w-100" style="max-width:400px;margin:0 auto;">
+        <div class="card-body p-4">
+            <div class="logo mb-3 text-center">
+                <img src="{{ url_for('static', filename='favicon.png') }}" alt="LOGO">
+            </div>
+            <h4 class="text-center fw-bold mb-1">three职网页校墙v0.6预览版</h4>
+            <p class="text-center text-muted small mb-4">
+                提供备注即可登录；首次登录需回答防外校验证题
+            </p>
+
+            <!-- 登录 / 注册入口 合一表单，前端正则与后端校验保持一致 -->
+            <form method="post" action="{{ url_for('login') }}">
+
+                <div class="form-floating mb-3">
+                    <input type="text" class="form-control" id="student_id" name="student_id"
+                           placeholder="学号" required maxlength="11" inputmode="numeric"
+                           pattern="\d{11}" title="学号必须是 11 位纯数字"
+                           autocomplete="username">
+                    <label for="student_id">学号（11 位数字）</label>
+                </div>
+
+                <div class="form-floating mb-3">
+                    <input type="text" class="form-control" id="grade" name="grade"
+                           placeholder="年级" required maxlength="2" inputmode="numeric"
+                           pattern="\d{1,2}" title="年级为 1~2 位数字，例如 26">
+                    <label for="grade">年级（如 26）</label>
+                </div>
+
+                <div class="form-floating mb-3">
+                    <input type="text" class="form-control" id="class_name" name="class_name"
+                           placeholder="班级" required maxlength="10"
+                           pattern="[一-龥A-Za-z0-9]{1,10}"
+                           title="班级为 1~10 位中文/数字/字母，例如 会计2、网络1">
+                    <label for="class_name">班级（如 汽修2）</label>
+                </div>
+
+                <div class="form-floating mb-4">
+                    <input type="text" class="form-control" id="name" name="name"
+                           placeholder="姓名" required maxlength="4"
+                           pattern="[一-龥]{2,4}" title="姓名必须是 2~4 个中文字符"
+                           autocomplete="name">
+                    <label for="name">姓名（2~4 个中文字符）</label>
+                </div>
+
+                <button type="submit" class="btn btn-wechat w-100 py-2">进入校园墙</button>
+            </form>
+
+            <p class="text-center text-muted mt-3 mb-0" style="font-size:.75rem;">
+                学号与身份信息一经注册即永久绑定，无法自助更改，请三思而后填！
+            </p>
+        </div>
+    </div>
+</div>
+{% endblock %}
