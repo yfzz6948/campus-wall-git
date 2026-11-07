@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}登录 · three职校园墙{% endblock %}
+{% block title %}登录 · 深three职网页墙{% endblock %}
 
 {% block content %}
 <div class="app-container px-3 pt-4 pb-1">
@@ -8,9 +8,9 @@
             <div class="logo mb-3 text-center">
                 <img src="{{ url_for('static', filename='favicon.png') }}" alt="LOGO">
             </div>
-            <h4 class="text-center fw-bold mb-1">深three职网页墙v0.8预览版</h4>
+            <h4 class="text-center fw-bold mb-1">深three职网页墙v6预览版</h4>
             <p class="text-center text-muted small mb-4">
-                提供备注即可登录；首次登录自动注册，需回答防外校验证题
+                提供备注即可登录；首次登录回答防外校验证题通过后自动注册
             </p>
 
             <!-- 登录 / 注册入口 合一表单，前端正则与后端校验保持一致 -->
@@ -57,6 +57,9 @@
             </form>
 
             <p class="text-center text-muted mt-3 mb-0" style="font-size:.75rem;">
+                此处使用Cloudflare不可见模式人机验证，点击按钮后出现延迟是正常现象；如长时间进不去请更换浏览器或刷新页面重试
+            </p>
+            <p class="text-center text-muted mt-3 mb-0" style="font-size:.75rem;">
                 学号与身份信息一经注册即该学号被永久绑定，无法自助更改，请三思而后填！
             </p>
         </div>
@@ -78,6 +81,22 @@
   let token = '';
   let submitting = false;   // 程序内提交时放行，避免再次拦自己
   let interacting = false;  // CF 弹出点击框时，说明进度还在，别急着判失败
+  let lastErr = '';         // CF 回传的错误码，用来给出一句人话
+
+  // 把 CF 的错误码翻成人话：300010 这类「客户端执行失败」光看数字没法自救
+  function explain(code) {
+    code = String(code || '');
+    if (code === 'unsupported') return '当前浏览器不支持人机验证，请换 Chrome / Edge / Safari 等主流浏览器';
+    if (/^(300|600)/.test(code)) {
+      return '人机验证没能跑完（错误码 ' + code + '）。常见原因是广告拦截/隐私扩展、VPN 或代理、网络不稳定；' +
+             '请多点几次或关掉拦截换个网络后刷新页面再试';
+    }
+    if (code === '110200' || code === '400021') return '本站域名不在 Turnstile 白名单里，请联系管理员';
+    if (code === '200500') return 'Cloudflare 的验证组件被网络拦截了（challenges.cloudflare.com 打不开），换个网络试试';
+    if (code === '200100') return '设备时间或浏览器缓存有问题，校准时间后刷新页面';
+    if (code === '110600' || code === '110620') return '验证超时了，请重新点一次「进入校园墙」';
+    return '人机验证未通过' + (code ? '（错误码 ' + code + '）' : '') + '，请刷新页面后重试';
+  }
 
   // 不可见模式：外观不可见，提交时才执行；正常用户全程无感
   function renderWidget() {
@@ -88,9 +107,16 @@
       appearance: 'interaction-only',
       execution: 'execute',
       'response-field': false,     // token 由我们自己写进隐藏域，别让组件再插一个同名字段
-      callback: function (t) { token = t; },
-      'error-callback': function () { token = ''; },
+      language: 'zh-CN',
+      callback: function (t) { token = t; lastErr = ''; },
+      'error-callback': function (code) {
+        token = '';
+        interacting = false;
+        lastErr = String(code || 'unknown');
+      },
       'expired-callback': function () { token = ''; },
+      'timeout-callback': function () { token = ''; lastErr = '110600'; },
+      'unsupported-callback': function () { lastErr = 'unsupported'; },
       'before-interactive-callback': function () {
         interacting = true;
         showToast('请按提示完成一次人机验证', 'warning');
@@ -101,18 +127,25 @@
   if (window.turnstile) renderWidget();
   else window.addEventListener('load', renderWidget);
 
-  // 等 token：正常 200ms 内就回来；若 CF 弹了点击框，则一直等到用户点完（最长 60 秒）
+  // 等 token：正常几百毫秒就回来；CF 弹了点击框就一直等用户点完（最长 60 秒）；
+  // 组件已经报错时立刻返回，不用干等到超时
   function waitToken(ms) {
     return new Promise(function (resolve) {
       const t0 = Date.now();
       const iv = setInterval(function () {
         const spent = Date.now() - t0;
-        if (token || (!interacting && spent >= ms) || spent >= 60000) {
+        if (token || (!interacting && (spent >= ms || lastErr)) || spent >= 60000) {
           clearInterval(iv);
           resolve(token);
         }
       }, 100);
     });
+  }
+
+  async function runChallenge() {
+    interacting = false;
+    try { window.turnstile.execute(widgetId); } catch (err) {}
+    return await waitToken(8000);
   }
 
   form.addEventListener('submit', async function (e) {
@@ -123,21 +156,30 @@
       showToast('人机验证组件没加载出来，请检查网络后刷新页面', 'danger');
       return;
     }
-    try { window.turnstile.reset(widgetId); } catch (err) {}
-    token = '';
-    interacting = false;
     const btn = form.querySelector('button[type="submit"]');
     btn.disabled = true;
-    try { window.turnstile.execute(widgetId); } catch (err) {}
-    const t = await waitToken(4000);
-    btn.disabled = false;
-    if (!t) {
-      showToast('人机验证未通过，请重试', 'danger');
-      return;
+    try {
+      // 已经有 token 就直接用。以前不管三七二十一先 reset()，等于把刚拿到的
+      // 验证结果作废、再白跑一次挑战，CF 很容易因此判成异常（300010 / 验证循环）
+      let t = token;
+      if (!t) t = await runChallenge();
+      if (!t && lastErr) {            // 第一次失败多半是瞬时问题，自动重试一次
+        try { window.turnstile.reset(widgetId); } catch (err) {}
+        token = '';
+        lastErr = '';
+        try { window.turnstile.execute(widgetId); } catch (err) {}
+        t = await waitToken(8000);
+      }
+      if (!t) {
+        showToast(explain(lastErr), 'danger');
+        return;
+      }
+      tokenInput.value = t;
+      submitting = true;
+      HTMLFormElement.prototype.submit.call(form);   // 绕过 submit 事件，避免二次拦截
+    } finally {
+      if (!submitting) btn.disabled = false;
     }
-    tokenInput.value = t;
-    submitting = true;
-    HTMLFormElement.prototype.submit.call(form);   // 绕过 submit 事件，避免二次拦截
   });
 })();
 </script>

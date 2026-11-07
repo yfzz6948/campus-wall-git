@@ -62,6 +62,20 @@
     .post-body table th, .post-body table td {
       border: 1px solid #e8e8e8; padding: .2rem .35rem; vertical-align: top;
     }
+    /* 长贴折叠：超过可视高度先收起来，点「展开全文」再看；图片在正文之外，不参与折叠 */
+    .post-body.is-collapsed {
+      max-height: 340px; overflow: hidden; position: relative; padding-bottom: .6rem;
+    }
+    .post-body.is-collapsed::after {
+      content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 64px;
+      background: linear-gradient(to bottom, rgba(255,255,255,0), #fff 75%);
+      pointer-events: none;
+    }
+    .post-toggle {
+      border: 0; background: none; padding: 0; margin: .1rem 0 .3rem;
+      color: #0d6efd; font-size: .82rem;
+    }
+    .post-toggle:hover { text-decoration: underline; }
 
     /* 回复浅灰区 */
     .reply-box { background: #f7f7f7; }
@@ -130,10 +144,10 @@
 <!-- ========== 全局通用页脚 ========== -->
 <footer class="app-container text-center text-muted small pt-1 pb-4 px-3 cw-footer">
   <a href="https://travel.moe/go.html" target="_blank" class="d-inline-block mb-1">
-    <img src="https://travel.moe/images/logo/default-dark.png" style="width:auto;height:20px" title="异次元之旅-跃迁-我们一起去萌站成员的星球旅行吧！">
+    <img src="{{ url_for('static', filename='default-dark.png') }}" style="width:auto;height:20px" title="异次元之旅-跃迁-我们一起去萌站成员的星球旅行吧！">
   </a>
   <div class="cw-footer-line"><a href="https://icp.gov.moe/?keyword=20261214" target="_blank">萌ICP备20261214号</a><span class="mx-1">·</span><a href="{{ url_for('privacy') }}">隐私政策及社区准则</a></div>
-  <div class="cw-footer-line" style="font-size: 0.72rem;"><span>Powered by Flask &amp; MariaDB</span><span class="ms-1" style="opacity:.55;">v{{ build }}</span></div>
+  <div class="cw-footer-line" style="font-size: 0.72rem;"><span>Powered by Flask &amp; MariaDB</span><span class="ms-1" style="opacity:.55;">{{ app_version }} · 构建号 {{ build }}</span></div>
 </footer>
 
 <!-- 全局浮动提示（flash） -->

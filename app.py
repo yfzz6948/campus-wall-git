@@ -96,6 +96,10 @@ def _compute_build():
 
 APP_BUILD = os.environ.get("APP_BUILD") or _compute_build()
 
+# 大版本号：只在架构级变化时改（比如这次把 AJAX 接口统一到 /api/...、错误页统一）。
+# 构建号仍然按文件 mtime 自动算，两者一起显示在页脚：v6 · 20261107.1542
+APP_VERSION = "v6"
+
 
 def load_env_file(path=ENV_FILE):
     """把同目录下的 campus_wall.env 读进环境变量，已存在的变量不覆盖。
@@ -733,6 +737,7 @@ def inject_build():
     """所有模板都能拿到 build，页面底部会显示，用来分辨「是不是旧缓存页面」。"""
     return {
         "build": APP_BUILD,
+        "app_version": APP_VERSION,
         "turnstile_site_key": TURNSTILE_SITE_KEY,
         "turnstile_on": turnstile_enabled(),
         "privacy_contact_emails": PRIVACY_CONTACT_EMAILS,
@@ -859,8 +864,35 @@ app.jinja_env.filters["ftime"] = friendly_time
 app.jinja_env.filters["md"] = render_markdown
 
 
+def _is_form_post():
+    """这次请求是不是浏览器原生表单提交（没有 JS 时的降级通道）。
+
+    判据是"没有声明要 JSON"：AJAX 代码一定带 X-Requested-With: fetch 或
+    Accept: application/json（见 index.html 的 submitForm），接口客户端也一样；
+    浏览器表单带的 Accept 是 text/html，所以会被认成表单。
+    注意不能只看 Content-Type：删除按钮那种没有字段的表单，浏览器可能连
+    Content-Type 都不发，只有 Content-Length: 0。
+    """
+    if request.method != "POST":
+        return False
+    if request.headers.get("X-Requested-With") == "fetch":
+        return False
+    if "application/json" in (request.headers.get("Accept") or ""):
+        return False
+    return True
+
+
 def wants_json():
-    """判断这次请求是不是 AJAX（要 JSON 而不是重定向）。"""
+    """判断这次请求是不是 AJAX（要 JSON 而不是重定向）。
+
+    /api/ 前缀的请求一律按接口处理：不用再靠请求头猜，行为固定、可预期。
+    例外是浏览器原生表单（无 JS）打到 /api —— 那是网页操作，不是接口调用，
+    要 flash + 跳转，不然用户会看到一坨 JSON。
+    """
+    if _is_form_post():
+        return False
+    if request.path.startswith(API_PREFIX + "/"):
+        return True
     if request.headers.get("X-Requested-With") == "fetch":
         return True
     # 兜底：某些反代/中间层会吃掉自定义请求头，Accept 是标准头更不容易丢。
@@ -868,10 +900,61 @@ def wants_json():
     return "application/json" in (request.headers.get("Accept") or "")
 
 
-def fail(message, code=400, endpoint="index"):
+# ---------------------------------------------------------------------------
+# 接口层：成功/失败只有一种形状 —— {ok, code, msg, data}
+#
+# 以前每个端点各自手拼一个 ok=True + 业务字段的 JSON，失败时又是 ok=False + error，
+# 前端得记住每种返回值，测试也得挨个对字段。现在统一：
+#   HTTP 200 → {"ok": true,  "code": "ok",       "msg": "发布成功",            "data": {...}}
+#   HTTP 4xx/5xx → {"ok": false, "code": "forbidden", "msg": "只能删除自己发的帖子"}
+# code 是给程序看的（稳定、可判断），msg 是给人看的（可以直接显示）。
+# ---------------------------------------------------------------------------
+API_PREFIX = "/api"
+
+
+class ApiError(Exception):
+    """接口/网页共用的一种业务失败。
+
+    归属校验、限流、内容不存在这些判断只写在这里，接口与普通表单两条入口
+    调用同一段逻辑，不会再出现「JSON 一套说法、跳转又是另一套说法」。
+    """
+
+    def __init__(self, code, msg, status=400):
+        super().__init__(msg)
+        self.code = code
+        self.msg = msg
+        self.status = status
+
+
+def api_body(ok, code, msg, data=None):
+    payload = {"ok": ok, "code": code, "msg": msg}
+    if data is not None:
+        payload["data"] = data
+    return payload
+
+
+def api_ok(msg="操作成功", data=None):
+    return jsonify(api_body(True, "ok", msg, data))
+
+
+def api_err(code, msg, status=400):
+    """直接拼一个错误响应（不进 errorhandler，用于本函数内就地返回的场景）。"""
+    return jsonify(api_body(False, code, msg)), status
+
+
+def fail(message, code=400, endpoint="index", err="bad_request"):
+    """表单校验没通过：AJAX 走 JSON，普通提交走 flash + 跳回指定页面。"""
     if wants_json():
-        return jsonify(ok=False, error=message), code
+        return api_err(err, message, code)
     flash(message, "danger")
+    return redirect(url_for(endpoint))
+
+
+def ok_or_redirect(msg, data=None, endpoint="index"):
+    """成功出口：AJAX 给 {ok, code, msg, data}，无 JS 的表单给 flash + 跳转。"""
+    if wants_json():
+        return api_ok(msg, data)
+    flash(msg, "success")
     return redirect(url_for(endpoint))
 
 
@@ -880,7 +963,7 @@ def login_required(view):
     def wrapped(*args, **kwargs):
         if "user_id" not in session:
             if wants_json():
-                return jsonify(ok=False, error="登录已过期，请重新登录"), 401
+                raise ApiError("unauthorized", "登录已过期，请重新登录", 401)
             return redirect(url_for("login"))
         return view(*args, **kwargs)
     return wrapped
@@ -891,18 +974,74 @@ def admin_required(view):
     def wrapped(*args, **kwargs):
         if "user_id" not in session:
             if wants_json():
-                return jsonify(ok=False, error="登录已过期，请重新登录"), 401
+                raise ApiError("unauthorized", "登录已过期，请重新登录", 401)
             return redirect(url_for("login"))
         # 实时查库校验管理员身份：被超管取消后立即生效，不依赖旧 Session 残留
         row = get_db().execute(
             "SELECT is_admin FROM users WHERE id = %s", (session["user_id"],)
         ).fetchone()
         if not row or not row["is_admin"]:
-            if wants_json():
-                return jsonify(ok=False, error="无管理员权限"), 403
-            abort(403)
+            raise ApiError("forbidden", "无管理员权限", 403)
         return view(*args, **kwargs)
     return wrapped
+
+
+# --- 归属校验（删帖/删回复/置顶共用，别在视图里各写一遍 SELECT + if）---------
+def require_post_row(post_id):
+    row = get_db().execute(
+        "SELECT id, user_id, is_pinned FROM posts WHERE id = %s", (post_id,)
+    ).fetchone()
+    if row is None:
+        raise ApiError("content_not_found", "内容不存在或已被删除", 404)
+    return row
+
+
+def require_post_writable(post_id):
+    """作者可以删自己的帖子，管理员可以删任何帖子。"""
+    row = require_post_row(post_id)
+    db = get_db()
+    uid = session["user_id"]
+    if not (is_admin_user(db, uid) or row["user_id"] == uid):
+        raise ApiError("forbidden", "只能删除自己发的帖子", 403)
+    return row
+
+
+def require_reply_writable(reply_id):
+    row = get_db().execute(
+        "SELECT id, user_id, post_id FROM replies WHERE id = %s", (reply_id,)
+    ).fetchone()
+    if row is None:
+        raise ApiError("content_not_found", "内容不存在或已被删除", 404)
+    db = get_db()
+    uid = session["user_id"]
+    if not (is_admin_user(db, uid) or row["user_id"] == uid):
+        raise ApiError("forbidden", "只能删除自己发的回复", 403)
+    return row
+
+
+# --- 限流：每日发帖配额 + 每小时回复上限，都只在这里判断一次 ----------------
+def check_post_quota(db, user_id):
+    """管理员豁免；超限抛 ApiError，接口与普通表单共用。"""
+    exceeded, today_count = post_quota_exceeded(db, user_id)
+    if exceeded:
+        raise ApiError(
+            "quota_exceeded",
+            f"今天已发 {today_count} 条，达到每日上限 {DAILY_POST_LIMIT} 条，明天再来吧",
+            429,
+        )
+
+
+def check_reply_rate(db, user_id):
+    """管理员豁免；超限直接抛 ApiError，由 errorhandler 统一变成 429。"""
+    if is_admin_user(db, user_id):
+        return
+    if reply_hour_count(db, user_id) >= REPLY_LIMIT_PER_HOUR:
+        raise ApiError(
+            "rate_limited",
+            f"回复太频繁了：每小时最多 {REPLY_LIMIT_PER_HOUR} 条，请稍后再试",
+            429,
+        )
+
 
 
 def start_session(user):
@@ -972,9 +1111,17 @@ def login():
 
         # 人机验证放在最前面：没过这一关，后面连查库都不做
         if turnstile_enabled():
-            verdict = turnstile_verdict(request.form.get("cf-turnstile-response") or "")
+            raw_token = request.form.get("cf-turnstile-response") or ""
+            verdict = turnstile_verdict(raw_token)
             if verdict is False:
-                flash("人机验证未通过，请重试（若反复失败请刷新页面）", "danger")
+                # 区分「压根没拿到结果」和「拿到了但 CF 判不通过」：
+                # 前者通常是页面里验证组件没跑起来（扩展/网络拦截），后者才是判定失败
+                if not raw_token:
+                    flash("没拿到人机验证结果（验证组件没跑完）。"
+                          "若页面上的验证框显示错误，请按提示处理后刷新页面", "danger")
+                else:
+                    flash("人机验证未通过，请重试（反复失败多半是广告拦截、"
+                          "VPN 或网络波动导致，可换个网络或关掉拦截再试）", "danger")
                 return render_template("login.html"), 400
             # verdict 为 None 表示 CF 校验接口暂时够不着：
             # 放行，交给下面的身份校验与连续失败锁定兜底，别让一次网络抖动把所有人挡在门外
@@ -1193,7 +1340,7 @@ def index():
 
     posts = db.execute(
         """
-        SELECT p.id, p.content, (p.image_data IS NOT NULL) AS has_image,
+        SELECT p.id, p.user_id, p.content, (p.image_data IS NOT NULL) AS has_image,
                p.is_anonymous, p.is_pinned, p.pinned_at, p.timestamp,
                u.grade, u.class_name, u.name
           FROM posts AS p JOIN users AS u ON u.id = p.user_id
@@ -1209,7 +1356,7 @@ def index():
         placeholders = ",".join(["%s"] * len(post_ids))
         replies = db.execute(
             f"""
-            SELECT r.id, r.post_id, r.content, r.is_anonymous, r.timestamp,
+            SELECT r.id, r.post_id, r.user_id, r.content, r.is_anonymous, r.timestamp,
                    u.grade, u.class_name, u.name
               FROM replies AS r JOIN users AS u ON u.id = r.user_id
              WHERE r.post_id IN ({placeholders})
@@ -1227,6 +1374,8 @@ def index():
         # 按库里的真实权限决定显不显示管理按钮：
         # 只信 Session 会出现「按钮在但一按就 403」的鬼打墙（权限被取消后 Session 还是旧值）
         is_admin=is_admin_user(db, session["user_id"]),
+        # 自己的帖子才显示删除按钮：匿名的帖子里也有 user_id，匿名只是前台不显示姓名
+        my_id=session["user_id"],
         page=page,
         pages=pages,
         total=total,
@@ -1271,7 +1420,7 @@ def link_out():
     return resp
 
 
-@app.route("/posts", methods=["POST"])
+@app.route(API_PREFIX + "/posts", methods=["POST"], endpoint="api_create_post")
 @login_required
 def create_post():
     content = (request.form.get("content") or "").strip()
@@ -1285,12 +1434,8 @@ def create_post():
 
     db = get_db()
 
-    # 每日发帖上限：管理员不受限（实时查库取身份，不依赖 Session 里的旧值）
-    exceeded, today_count = post_quota_exceeded(db, session["user_id"])
-    if exceeded:
-        return fail(
-            f"今天已发 {today_count} 条，达到每日上限 {DAILY_POST_LIMIT} 条，明天再来吧"
-        )
+    # 每日发帖上限：管理员不受限（判断统一在 check_post_quota 里，供两条入口共用）
+    check_post_quota(db, session["user_id"])
 
     image_mime, image_data = None, None
     if has_image:
@@ -1309,17 +1454,15 @@ def create_post():
     db.commit()
     post_id = cur.lastrowid
 
-    if wants_json():
-        shown_name = "***" if anonymous else session["name"]
-        return jsonify(ok=True, post={
-            "id": post_id,
-            "content_html": render_markdown(content),
-            "image_url": url_for("post_image", post_id=post_id) if has_image else "",
-            "display_name": f'{session["grade"]}{session["class_name"]} {shown_name}',
-            "initial": "匿" if anonymous else session["name"][0],
-            "time": friendly_time(ts),
-        })
-    return redirect(url_for("index"))
+    shown_name = "***" if anonymous else session["name"]
+    return ok_or_redirect("发布成功", {"post": {
+        "id": post_id,
+        "content_html": render_markdown(content),
+        "image_url": url_for("post_image", post_id=post_id) if has_image else "",
+        "display_name": f'{session["grade"]}{session["class_name"]} {shown_name}',
+        "initial": "匿" if anonymous else session["name"][0],
+        "time": friendly_time(ts),
+    }})
 
 
 # ---------------------------------------------------------------------------
@@ -1346,7 +1489,7 @@ def _draft_of_current_user(draft_id):
     return row
 
 
-@app.route("/drafts/save", methods=["POST"])
+@app.route(API_PREFIX + "/drafts/save", methods=["POST"], endpoint="api_draft_save")
 @login_required
 def draft_save():
     content = (request.form.get("content") or "").strip()
@@ -1366,10 +1509,8 @@ def draft_save():
     count = trim_drafts(db, session["user_id"])
     db.commit()
 
-    if wants_json():
-        return jsonify(ok=True, count=count)
-    flash(f"已存入草稿箱（当前 {count} 条）", "success")
-    return redirect(url_for("drafts_list"))
+    return ok_or_redirect(f"已存入草稿箱（当前 {count} 条）", {"count": count},
+                          "drafts_list")
 
 
 @app.route("/drafts/<int:draft_id>/update", methods=["POST"])
@@ -1440,14 +1581,13 @@ def draft_delete(draft_id):
     return redirect(url_for("drafts_list"))
 
 
-@app.route("/posts/<int:post_id>/replies", methods=["POST"])
+@app.route(API_PREFIX + "/posts/<int:post_id>/replies", methods=["POST"],
+           endpoint="api_create_reply")
 @login_required
 def create_reply(post_id):
     db = get_db()
     if db.execute("SELECT id FROM posts WHERE id = %s", (post_id,)).fetchone() is None:
-        if wants_json():
-            return jsonify(ok=False, error="帖子不存在或已被删除"), 404
-        abort(404)
+        raise ApiError("content_not_found", "帖子不存在或已被删除", 404)
 
     content = (request.form.get("content") or "").strip()
     if not content:
@@ -1456,8 +1596,7 @@ def create_reply(post_id):
         return fail(f"回复内容不能超过 {REPLY_MAX_LEN} 字")
 
     # 每小时回复上限：发的时候不提示，超了才拒绝；管理员不受限制
-    if not is_admin_user(db, session["user_id"]) and reply_hour_count(db, session["user_id"]) >= REPLY_LIMIT_PER_HOUR:
-        return fail(f"回复太频繁了：每小时最多 {REPLY_LIMIT_PER_HOUR} 条，请稍后再试", 429)
+    check_reply_rate(db, session["user_id"])
 
     ts = now_utc_sql()
     anonymous = 1 if request.form.get("is_anonymous") in ("1", "on", "true", "yes") else 0
@@ -1468,42 +1607,45 @@ def create_reply(post_id):
     )
     db.commit()
 
-    if wants_json():
-        return jsonify(ok=True, reply={
-            "id": cur.lastrowid,
-            "content": content,   # 回复按纯文本展示，前端用 textContent 填充
-            # 匿名回复不能暴露真实姓名，否则"回一句就露馅"
-            "display_name": "***" if anonymous else full_name(
-                session["grade"], session["class_name"], session["name"]),
-            "is_anonymous": bool(anonymous),
-            "time": friendly_time(ts),
-        })
-    return redirect(url_for("index"))
+    # 匿名回复不能暴露真实姓名，否则"回一句就露馅"
+    shown_name = "***" if anonymous else full_name(
+        session["grade"], session["class_name"], session["name"])
+    return ok_or_redirect("回复成功", {"reply": {
+        "id": cur.lastrowid,
+        "content": content,   # 回复按纯文本展示，前端用 textContent 填充
+        "display_name": shown_name,
+        "is_anonymous": bool(anonymous),
+        "time": friendly_time(ts),
+    }})
 
 
-@app.route("/posts/<int:post_id>/delete", methods=["POST"])
-@admin_required
+@app.route(API_PREFIX + "/posts/<int:post_id>/delete", methods=["POST"],
+           endpoint="api_delete_post")
+@login_required
 def delete_post(post_id):
+    """删帖：作者可以删自己的帖子，管理员可以删任何帖子。归属判断在 require_post_writable。"""
     db = get_db()
+    require_post_writable(post_id)
+
     # 外键 ON DELETE CASCADE 会自动删回复；这里显式删一次，双保险
     db.execute("DELETE FROM replies WHERE post_id = %s", (post_id,))
     db.execute("DELETE FROM posts WHERE id = %s", (post_id,))
     db.commit()  # 图片 BLOB 随帖子行一并删除，无需再处理文件
 
-    if wants_json():
-        return jsonify(ok=True)
-    return redirect(url_for("index"))
+    return ok_or_redirect("已删除")
 
 
-@app.route("/replies/<int:reply_id>/delete", methods=["POST"])
-@admin_required
+@app.route(API_PREFIX + "/replies/<int:reply_id>/delete", methods=["POST"],
+           endpoint="api_delete_reply")
+@login_required
 def delete_reply(reply_id):
+    """删回复：作者可以删自己的回复，管理员可以删任何回复。归属判断在 require_reply_writable。"""
     db = get_db()
+    require_reply_writable(reply_id)
+
     db.execute("DELETE FROM replies WHERE id = %s", (reply_id,))
     db.commit()
-    if wants_json():
-        return jsonify(ok=True)
-    return redirect(url_for("index"))
+    return ok_or_redirect("已删除")
 
 
 # ---------------------------------------------------------------------------
@@ -1512,7 +1654,7 @@ def delete_reply(reply_id):
 MAX_PINNED_POSTS = 3
 
 
-@app.route("/posts/<int:post_id>/pin", methods=["POST"])
+@app.route(API_PREFIX + "/posts/<int:post_id>/pin", methods=["POST"], endpoint="api_set_pin")
 @admin_required
 def set_pin(post_id):
     # 字段名叫 pin_act，不叫 action：表单里一旦有 <input name="action">，
@@ -1524,14 +1666,7 @@ def set_pin(post_id):
         raw = request.form.get("action", "pin")
     pin = 1 if raw == "pin" else 0
     db = get_db()
-    post = db.execute(
-        "SELECT is_pinned FROM posts WHERE id = %s", (post_id,)
-    ).fetchone()
-    if post is None:
-        msg = f"帖子不存在或已被删除（id={post_id}）"
-        if wants_json():
-            return jsonify(ok=False, error=msg), 404
-        abort(404)
+    post = require_post_row(post_id)
 
     if pin and not post["is_pinned"]:
         pinned_count = db.execute(
@@ -1550,9 +1685,34 @@ def set_pin(post_id):
         )
     db.commit()
 
-    if wants_json():
-        return jsonify(ok=True, pinned=bool(pin))
-    return redirect(url_for("index"))
+    return ok_or_redirect("已置顶" if pin else "已取消置顶", {"pinned": bool(pin)})
+
+
+# ---------------------------------------------------------------------------
+# 老入口全部 307 到 /api/...
+#
+# 每个动作只保留一个实现、一个 URL；老地址只做跳转，不再复制一份视图。
+# 用 307 而不是 308：两者都"保留方法与请求体"（浏览器会把原来的 POST、
+# 连同图片一起原样重发），但 308 会被浏览器永久缓存，以后想改就得上清缓存。
+# 没刷新的旧 HTML（action 还是老地址）点按钮 → 307 → 落到 /api → 正常响应；
+# 无 JS 的普通表单 → 307 → /api，那边按浏览器表单处理（flash + 跳回首页）。
+# ---------------------------------------------------------------------------
+def _legacy_to_api(target_endpoint):
+    def _redirect_view(**view_args):
+        return redirect(url_for(target_endpoint, **view_args), code=307)
+    return _redirect_view
+
+
+for _old_rule, _old_endpoint, _new_endpoint in (
+    ("/posts", "create_post", "api_create_post"),
+    ("/posts/<int:post_id>/replies", "create_reply", "api_create_reply"),
+    ("/posts/<int:post_id>/delete", "delete_post", "api_delete_post"),
+    ("/replies/<int:reply_id>/delete", "delete_reply", "api_delete_reply"),
+    ("/posts/<int:post_id>/pin", "set_pin", "api_set_pin"),
+    ("/drafts/save", "draft_save", "api_draft_save"),
+):
+    app.add_url_rule(_old_rule, endpoint=_old_endpoint,
+                     view_func=_legacy_to_api(_new_endpoint), methods=["POST"])
 
 
 # ---------------------------------------------------------------------------
@@ -1622,14 +1782,10 @@ def _refuse_insecure_secret():
     """没有配 SECRET_KEY 时拒绝服务（伪造 Session 等于直接伪造管理员身份）。"""
     if not INSECURE_SECRET:
         return None
+    msg = "服务器配置错误：SECRET_KEY 未设置，已拒绝提供服务（请在 campus_wall.env 写入后重启）"
     if wants_json():
-        return jsonify(ok=False, error="服务器配置错误：SECRET_KEY 未设置"), 500
-    return (
-        "<h4 style='text-align:center;margin-top:4rem;color:#888;'>"
-        "服务器配置错误：SECRET_KEY 未设置，已拒绝提供服务<br>"
-        "<span style='font-size:.8rem;color:#aaa;'>请在 campus_wall.env 中写入 SECRET_KEY 后重启服务</span>"
-        "</h4>"
-    ), 500
+        return api_err("config_error", msg, 500)
+    return render_error_page(500, msg, title="服务器配置错误"), 500
 
 
 @app.after_request
@@ -1649,6 +1805,7 @@ def _security_headers(resp):
     resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
     resp.headers.setdefault("X-Robots-Tag", "noindex")
     resp.headers.setdefault("X-CW-Build", APP_BUILD)
+    resp.headers.setdefault("X-CW-Version", APP_VERSION)
 
     path = request.path or ""
     if path.startswith("/static/") or path.startswith("/media/"):
@@ -1823,21 +1980,91 @@ def admin_question_delete(qid):
 
 
 # ---------------------------------------------------------------------------
-# 错误页
+# 统一错误页
+#
+# 两件事：
+# 1. 网页入口不再吐 `<h4 style=...>` 这种一行内联 HTML，也不返回 Werkzeug 默认页，
+#    统一渲染 templates/error.html（带站点样式、返回首页按钮）。
+# 2. 接口入口（/api/... 或带 AJAX 头）一律回 {ok:false, code, msg}，
+#    错误码稳定可判断，提示语能直接显示给用户。
+# nginx 自己产生的错误（413 请求体过大、502/504 上游不可用）走 info/cw-error.html
+# 静态页，见 info/wall_nginx.txt 的 error_page 段。
 # ---------------------------------------------------------------------------
+ERROR_TITLES = {
+    400: "请求有误",
+    401: "需要登录",
+    403: "没有权限",
+    404: "内容不存在",
+    405: "不支持的请求方式",
+    413: "上传内容过大",
+    429: "操作太频繁",
+    500: "服务器开小差了",
+    502: "服务暂时不可用",
+    503: "服务暂时不可用",
+    504: "服务响应超时",
+}
+
+ERROR_DEFAULT_MSG = {
+    400: "提交的内容格式不对，返回上一页重试吧",
+    401: "登录已过期，请重新登录",
+    403: "你没有执行这个操作的权限",
+    404: "你要找的内容不存在，或者已经被删除了",
+    405: "这个地址不接受当前的请求方式",
+    413: f"上传内容过大（图片最大 {MAX_IMAGE_SIZE // (1024 * 1024)}MB）",
+    429: "操作太频繁了，请稍后再试",
+    500: "服务器开了个小差，请稍后再试",
+    502: "服务暂时不可用，请稍后再试",
+    503: "服务暂时不可用，请稍后再试",
+    504: "服务响应超时，请稍后再试",
+}
+
+
+def render_error_page(status, msg=None, title=None):
+    return render_template(
+        "error.html",
+        error_code=status,
+        error_title=title or ERROR_TITLES.get(status, "出错了"),
+        error_msg=msg or ERROR_DEFAULT_MSG.get(status, "请稍后再试"),
+    )
+
+
+@app.errorhandler(ApiError)
+def handle_api_error(e):
+    """业务失败的唯一出口：接口回 JSON，网页回统一错误页。"""
+    if wants_json():
+        return api_err(e.code, e.msg, e.status)
+    if e.status == 401:
+        flash(e.msg, "danger")
+        return redirect(url_for("login"))
+    return render_error_page(e.status, e.msg), e.status
+
+
 @app.errorhandler(403)
 def forbidden(e):
     if wants_json():
-        return jsonify(ok=False, error="无权限：该操作仅管理员可用"), 403
-    return "<h4 style='text-align:center;margin-top:4rem;color:#888;'>403：仅管理员可执行此操作</h4>", 403
+        return api_err("forbidden", "无权限：该操作仅管理员可用", 403)
+    return render_error_page(403), 403
 
 
 @app.errorhandler(404)
 def not_found(e):
+    msg = "内容不存在或已被删除"
     if wants_json():
         # 把请求路径带出来：能立刻分清「接口/地址压根不存在」和「帖子被删了」
-        return jsonify(ok=False, error=f"接口不存在：{request.path}"), 404
-    return "<h4 style='text-align:center;margin-top:4rem;color:#888;'>404：内容不存在或已被删除</h4>", 404
+        return api_err("not_found", f"接口不存在：{request.path}", 404)
+    return render_error_page(404, msg), 404
+
+
+@app.errorhandler(405)
+def method_not_allowed(e):
+    # 典型场景：把 GET 直接敲到只收 POST 的接口上，以前会回到默认页
+    if wants_json():
+        return api_err(
+            "method_not_allowed",
+            f"接口只接受 {', '.join(sorted(getattr(e, 'valid_methods', []) or ['POST']))}",
+            405,
+        )
+    return render_error_page(405), 405
 
 
 @app.errorhandler(500)
@@ -1845,17 +2072,16 @@ def internal_error(e):
     # 详情仍打到 stderr（journalctl -u campus-wall 能看到完整堆栈），
     # 但客户端拿到的是 JSON / 友好文案，不会再出现「网页报错」或空白
     if wants_json():
-        return jsonify(ok=False, error="服务器内部错误，请稍后再试"), 500
-    return "<h4 style='text-align:center;margin-top:4rem;color:#888;'>500：服务器开小差了，请稍后再试</h4>", 500
+        return api_err("internal_error", "服务器内部错误，请稍后再试", 500)
+    return render_error_page(500), 500
 
 
 @app.errorhandler(413)
 def too_large(e):
-    msg = f"上传内容过大（图片最大 {MAX_IMAGE_SIZE // (1024 * 1024)}MB）"
+    msg = ERROR_DEFAULT_MSG[413]
     if wants_json():
-        return jsonify(ok=False, error=msg), 413
-    flash(msg, "danger")
-    return redirect(url_for("index"))
+        return api_err("payload_too_large", msg, 413)
+    return render_error_page(413, msg), 413
 
 
 # ---------------------------------------------------------------------------
@@ -1867,7 +2093,7 @@ def too_large(e):
 @app.errorhandler(pymysql.InterfaceError)
 def database_down(e):
     if wants_json():
-        return jsonify(ok=False, error="服务暂时不可用，请稍后重试"), 503
+        return api_err("service_unavailable", "服务暂时不可用，请稍后重试", 503)
     return render_template("unavailable.html"), 503, {
         "Cache-Control": "no-store",
         "Retry-After": "30",

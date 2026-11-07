@@ -14,14 +14,17 @@ StartLimitBurst=3
 User=root
 Group=root
 WorkingDirectory=/home/campus-wall
-Environment="PATH=/home/campus-wall/.venv/bin"
+Environment="PATH=/home/campus-wall/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 # 数据库连接与 SECRET_KEY 全部来自这个文件；两台 Web 的内容必须完全一致。
 # 绝不要在单元里用命令随机生成 SECRET_KEY：那样每次重启都会让所有人掉登录，
 # 两台机器之间也会互相不认对方的 Session。
 EnvironmentFile=/home/campus-wall/campus_wall.env
 # 开跑前先确认 5000 没被别人占着：占着就直接失败并在 journal 里说清楚，
 # 而不是让 gunicorn 自己去撞（它的报错会被 Restart 循环淹掉）。
-ExecStartPre=/bin/sh -c "ss -lntp 2>/dev/null | grep -q ':5000 ' && { echo '[campus-wall] 端口 5000 已被其他进程占用，请先 kill 掉它'; exit 1; } || true"
+# 这里刻意不用 ss|grep：本单元的 PATH 被 Environment= 覆写过，一旦 PATH 只留
+# 了 venv/bin，ss / grep 就全都"command not found"，预检会静默失效（曾经就是这么坏的）。
+# 用 venv 里的 python 直连一次端口，不依赖任何外部命令。
+ExecStartPre=/home/campus-wall/.venv/bin/python3 -c "import socket,sys; s=socket.socket(); s.settimeout(0.9); rc=s.connect_ex(('127.0.0.1',5000)); print('[campus-wall] 端口 5000 已被其他进程占用，请先 kill 掉它', file=sys.stderr) if rc==0 else None; sys.exit(2 if rc==0 else 0)"
 ExecStart=/home/campus-wall/.venv/bin/gunicorn -w 2 -b 127.0.0.1:5000 --access-logfile /dev/null app:app
 Restart=always
 RestartSec=3

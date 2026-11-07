@@ -1,4 +1,4 @@
-# 校园信息墙 v5（Campus Wall）
+# 校园信息墙 v6（Campus Wall）
 
 Flask + **MariaDB** + Bootstrap 5 的极简校园信息墙。支持多台 Web 服务器共用同一个数据库，
 配合 DNS 轮询或 nginx 负载均衡做双机/多机部署。
@@ -13,7 +13,7 @@ Flask + **MariaDB** + Bootstrap 5 的极简校园信息墙。支持多台 Web �
 只有 CF 判定可疑时才可能弹一次点击。注册跳转页 `/register/jump` 已下线，注册流程是
 `POST /login`（新学号）→ 直接进 `/register/quiz` 答题，防外校靠题库、防脚本靠人机验证。
 
-## v5 架构（重要变更）
+## 架构（v5 奠定，v6 沿用）
 
 ```
                          ┌─────────────────────┐
@@ -50,11 +50,148 @@ campus-wall/
 ├── campus_wall.env.example     # 环境变量示例（数据库地址、密码、SECRET_KEY）
 ├── campus_wall_service.txt     # systemd 单元样例（EnvironmentFile 载入环境变量）
 ├── README.md
-├── templates/                  # 11 个 Jinja 模板（登录/注册跳转/答题/首页/草稿箱/站外提示页/题库/题库表单/管理员/降级页/基础布局）
+├── info/
+│   ├── wall_nginx.txt          # nginx 站点配置样例（含 error_page 兜底段，v6 新增）
+│   └── cw-error.html           # nginx 自身错误（413/502/504）用的静态错误页，v6 新增
+├── templates/                  # 14 个 Jinja 模板
 └── static/
     ├── bootstrap.min.css       # 本地化，不依赖 CDN
     ├── bootstrap.bundle.min.js
     └── favicon.png
+```
+
+`templates/` 里 v6 新增 `error.html`（统一错误页，`403/404/405/413/429/500` 都渲染它）。
+
+---
+
+## v6 变更：接口统一到 `/api/...` + 固定 `{ok, code, msg}` + 统一错误页
+
+这一版没有对外开新能力，只是把**已经在用的那批 AJAX 端点**整理成一套可预测的形态。
+公开入口仍然只有 `/`、`/login`、`/privacy`、`/media/post/<id>` 这些，接口全部要求已登录。
+
+### 1. 接口清单
+
+| 方法 | 路径 | 作用 | 权限 |
+|------|------|------|------|
+| POST | `/api/posts` | 发帖（`content` / `image` / `is_anonymous`） | 登录 |
+| POST | `/api/posts/<id>/replies` | 回复（`content` / `is_anonymous`） | 登录 + 每小时 30 条 |
+| POST | `/api/posts/<id>/delete` | 删帖（连带该帖回复） | 作者或管理员 |
+| POST | `/api/replies/<id>/delete` | 删回复 | 作者或管理员 |
+| POST | `/api/posts/<id>/pin` | 置顶 / 取消置顶（`pin_act=pin\|unpin`） | 管理员 |
+| POST | `/api/drafts/save` | 存草稿（只存文字） | 登录 |
+
+老路径（`/posts`、`/posts/<id>/replies`……）**只剩一个 307 跳转**，不再复制视图：
+每个动作只有一个实现、一个正式 URL。
+
+- 页面里的 AJAX 请求走 `data-api="{{ url_for('api_create_post') }}"`，即 `/api/...`。
+  前端 `submitForm()` 的逻辑是 `form.dataset.api || form.getAttribute('action')`：
+  有 `data-api` 用接口，没有就退回老 action。
+- **没刷新的旧页面**（浏览器/CF 缓存里的老 HTML）点按钮 → 307 → 落到 `/api/...`，
+  浏览器/fetch 会自动带着原请求体重发一次，照常拿到 `{ok, code, msg}`。
+  最多是中间多一跳，功能不受影响。
+- **没有 JS 的普通表单**（`<form action="{{ url_for('create_post') }}">`）→ 307 → `/api/...`。
+  服务端会把这种请求认成"浏览器表单"（没有 `X-Requested-With: fetch`、`Accept` 也不是
+  `application/json`），照样 flash + 302 回首页，不会让人对着 JSON 发呆。
+- 为什么是 307 不是 308：两者都保留方法与请求体，但 308 会被浏览器**永久缓存**，
+  以后想调整入口就得上清缓存；307 是临时的，行为一样但可回退。
+
+### 2. 返回体只有一种形状
+
+```jsonc
+// 成功（HTTP 200）
+{"ok": true,  "code": "ok", "msg": "发布成功", "data": {"post": {"id": 42, ...}}}
+// 失败（HTTP 400/401/403/404/405/413/429/500/503）
+{"ok": false, "code": "forbidden", "msg": "只能删除自己发的帖子"}
+```
+
+- `ok`：布尔，程序判断用。
+- `code`：稳定的机器码，**不要拿它做展示**。目前出现的值：
+  `ok` / `bad_request` / `unauthorized` / `forbidden` / `content_not_found` / `not_found` /
+  `method_not_allowed` / `rate_limited` / `quota_exceeded` / `payload_too_large` /
+  `internal_error` / `service_unavailable` / `config_error`。
+- `msg`：给人看的整句中文，前端直接 `showToast(data.msg)`，不需要再拼状态码。
+- `data`：成功时的业务数据（`post` / `reply` / `pinned` / `count`），失败时没有这个键。
+
+前端 `parseJson()` 会 `return data.data || data`，所以老形状（扁平 `{ok, post}`）也不会炸；
+失败提示是 `data.msg || data.error || "操作失败（HTTP ...）"`，两个字段都认。
+
+例外只有一种：**同一个 `/api/...` 地址被浏览器原生表单直接 POST**（没有
+`X-Requested-With: fetch`，`Accept` 也不是 `application/json`）。这时按网页操作处理，
+返回 flash + 302 回首页，而不是 JSON —— 这是给"JS 没跑起来"的情况留的降级，不是接口行为。
+
+### 3. 归属校验与限流只写一处
+
+以前 `delete_post`、`delete_reply`、`set_pin`、`create_reply` 各自 `SELECT ... user_id` + `if`，
+改一处漏三处。v6 起收敛成：
+
+| 函数 | 作用 |
+|------|------|
+| `require_post_row(post_id)` | 取帖子行；不存在 → `404 content_not_found` |
+| `require_post_writable(post_id)` | 作者或管理员才能继续 → 否则 `403 forbidden` |
+| `require_reply_writable(reply_id)` | 同上，针对回复 |
+| `check_reply_rate(db, uid)` | 每小时 30 条，管理员豁免 → 否则 `429 rate_limited` |
+| `check_post_quota(db, uid)` | 每日 10 条，管理员豁免 → 否则 `429 quota_exceeded` |
+| `ApiError(code, msg, status)` | 以上全部抛这一种异常，由 `errorhandler` 统一出口 |
+
+`admin_required` / `login_required` 也改成抛 `ApiError`，不再各自 `jsonify(ok=False, ...)`：
+接口拿到 JSON，网页拿到统一错误页（401 例外，照旧跳登录）。
+
+### 4. 统一错误页（不再露 nginx 默认页）
+
+分两层，别混：
+
+1. **应用层**（Flask 能应答时）：`templates/error.html`，继承 `base.html`，
+   带站点样式、`返回首页` / `重新加载` 按钮、版本号。`403/404/405/413/429/500` 全走它；
+   `503`（数据库不可用）仍用 `templates/unavailable.html`（带 `Retry-After: 30`）。
+2. **nginx 层**（应用没应答时）：`info/cw-error.html` 静态页，纯内联 CSS，不依赖任何外部资源。
+   覆盖 nginx 自己产生的 `400/403/413/500/502/503/504`（最常见的是 15MB 请求体被 413 拒、
+   重启期间 502、`deny all` 拦掉非 CF 网段时的 403）。
+
+nginx 侧**不要开 `proxy_intercept_errors`**：开了会把应用精心做的 404/403 页也换成静态页，
+反而把「内容已被删除」这类有用信息丢掉。
+
+### 5. 服务器上要做什么
+
+```bash
+# ① 传代码（排除 .venv / Lib / campus_wall.env）
+#    app.py、templates/error.html、templates/base.html、templates/index.html
+cd /home/campus-wall
+md5sum app.py templates/error.html        # 和本地对一遍
+
+# ② 安装 nginx 静态错误页（只需一次）
+sudo mkdir -p /etc/nginx/cw-pages
+sudo cp info/cw-error.html /etc/nginx/cw-pages/cw-error.html
+sudo chmod 644 /etc/nginx/cw-pages/cw-error.html
+
+# ③ 把 info/wall_nginx.txt 里的 error_page 段并进站点配置
+#    （443 主站与 127.0.0.1:8000 的 Tor 段各一份），然后
+sudo nginx -t && sudo systemctl reload nginx
+
+# ④ 重启应用（改的是 .py 和模板，必须重启 worker，光 reload nginx 不够）
+sudo systemctl restart campus-wall
+```
+
+### 6. 怎么验证真的生效
+
+```bash
+# 版本号：页脚应显示 v6 · 构建号 xxxx，响应头带 X-CW-Version: v6 与 X-CW-Build
+curl -sI https://y4006948.com/login | grep -E 'X-CW-(Version|Build)'
+
+# 接口形状：未登录打接口必须是 401 JSON，而不是 302 到登录页
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://y4006948.com/api/posts \
+     -H 'X-Requested-With: fetch'
+# 期望 401；若得到 302，说明服务还是旧代码（回去看 md5sum 和 systemctl restart）
+
+# 统一错误页：网页 404 应该是带「返回首页」的卡片，不是一行灰字
+curl -s https://y4006948.com/no-such-page | grep -c '返回首页'
+# 期望 ≥1
+
+# 单一入口：老地址只该回 307，Location 指向 /api/...
+curl -sI -X POST https://y4006948.com/posts | grep -Ei 'HTTP/|location'
+# 期望 307 + Location: /api/posts（若还是 200，说明跑的是 v5 的旧代码）
+
+# nginx 兜底页：故意要一个超大请求体（先别在线上乱试，或者用本地 nginx 验）
+# 期望看到 info/cw-error.html 的内容，而不是 nginx 的 "413 Request Entity Too Large"
 ```
 
 ---
@@ -215,9 +352,13 @@ StartLimitBurst=3
 User=campus-wall
 Group=campus-wall
 WorkingDirectory=/home/campus-wall
-Environment="PATH=/home/campus-wall/.venv/bin"
+Environment="PATH=/home/campus-wall/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 EnvironmentFile=/home/campus-wall/campus_wall.env
-ExecStartPre=/bin/sh -c "ss -lntp 2>/dev/null | grep -q ':5000 ' && { echo '[campus-wall] 端口 5000 已被其他进程占用，请先 kill 掉它'; exit 1; } || true"
+# 端口预检用 venv 里的 python 直连一次，不依赖 ss / grep：
+# 本单元用 Environment= 覆写了 PATH，只要 PATH 里没有 /usr/bin，ss 和 grep 就会
+# "command not found"，预检反而静默失效（线上就这么坏过一次：journal 里
+# `sh[...]: grep: command not found`，服务照常起，但预检形同虚设）。
+ExecStartPre=/home/campus-wall/.venv/bin/python3 -c "import socket,sys; s=socket.socket(); s.settimeout(0.9); rc=s.connect_ex(('127.0.0.1',5000)); print('[campus-wall] 端口 5000 已被其他进程占用，请先 kill 掉它', file=sys.stderr) if rc==0 else None; sys.exit(2 if rc==0 else 0)"
 ExecStart=/home/campus-wall/.venv/bin/gunicorn -w 2 -b 127.0.0.1:5000 --access-logfile /dev/null app:app
 Restart=always
 RestartSec=3
@@ -231,6 +372,16 @@ WantedBy=multi-user.target
 > `systemctl status` 在重试间隙还显示 `active (running)`，极容易误判成服务正常。
 > 加了这两处之后，连续失败 3 次就会停在 `failed` 状态，journal 里还会直接写出
 > 「端口 5000 已被其他进程占用」。修好端口后记得 `systemctl reset-failed campus-wall`。
+>
+> **上面这个代码块只是参考，别整段（连同重复的段落）粘进
+> `/etc/systemd/system/campus-wall.service`。** 粘重了 systemd 会报
+> `Assignment outside of section. Ignoring.`，而且行号落在几十行之后（比如 81–97 行，
+> 而正常单元文件只有 35 行）——那些行被**直接忽略**，单元就等于没改。
+> 改完一律 `systemctl daemon-reload`，再用下面两条确认系统真的读到了新值、而不是缓存的旧版：
+> ```bash
+> systemd-analyze verify /etc/systemd/system/campus-wall.service   # 无输出即语法通过
+> systemctl show campus-wall -p Environment -p ExecStartPre -p ExecStart -p MainPID
+> ```
 
 
 > **别用 root 跑 gunicorn**（`campus_wall_service.txt` 里现在是 `User=root`）。
@@ -320,6 +471,9 @@ server {
 | 10 | Turnstile 的两把 key 已写进两台机器的 `campus_wall.env` | `grep -c '^TURNSTILE_' campus_wall.env` 返回 2；登录页源码里有 `challenges.cloudflare.com/turnstile` | 登录不做人机验证（留空也不报错，只是静默不启用），脚本可无限猜学号+身份信息 |
 | 11 | 旧的 `/register/jump` 质询规则已从 Custom rules 删除 | 面板里只剩「国外NP访问」等仍在用的规则 | 白占规则名额；指向一个已 404 的路径，纯误导 |
 | 12 | `/privacy` 能匿名打开且引用了 Turnstile 补充条款；新注册会被强制拦在同意页 | `curl -sI https://y4006948.com/privacy \| head -1` 返回 200；`grep -c turnstile-privacy-policy` ≥ 1；用一个新学号走一遍注册，应停在「滚动到底→勾选→开始答题」那一步 | Turnstile 隐形模式在使用条件上不达标；访客也能不看社区准则就发言 |
+| 13 | v6 的 `templates/error.html` 已上传 | `curl -s https://y4006948.com/no-such-page \| grep -c 返回首页` ≥ 1 | 404/403 退回内联灰字（`<h4 style=...>`），和全站风格不搭 |
+| 14 | 接口返回体是 `{ok, code, msg}` | `curl -s -X POST https://y4006948.com/api/posts -H 'X-Requested-With: fetch'` 返回 401 且 body 里有 `"code"` | 旧代码仍回 `{ok, error}`，前端提示只能显示「操作失败（HTTP 4xx）」 |
+| 15 | nginx 有 `error_page … /cw-error.html` 且文件已就位 | `grep -n cw-error /etc/nginx/conf.d/*.conf`；`nginx -t` 通过；`ls -l /etc/nginx/cw-pages/cw-error.html` | 重启/超时/大图上传时访客看到 nginx 默认页（白底黑字 `502 Bad Gateway`），像站点挂了 |
 
 补充说明：
 
@@ -382,7 +536,7 @@ curl -s https://y4006948.com/login | grep -c 'challenges.cloudflare.com/turnstil
 # 2. 不带 token 直接 POST，应该 400，而不是 302
 curl -s -o /dev/null -w '%{http_code}\n' -X POST https://y4006948.com/login \
   -d 'student_id=25700000001&grade=25&class_name=%E7%BD%91%E7%BB%9C1&name=%E5%BC%A0%E4%B8%89'
-# 期望 400（人机验证未通过）；如果返回 302，说明 secret 没生效或 host 被判定为本机/onion
+# 期望 400（没拿到人机验证结果）；如果返回 302，说明 secret 没生效或 host 被判定为本机/onion
 ```
 
 > `.onion` 入口不做验证：那边连不到 CF，行为与改造前完全一致。
@@ -390,6 +544,37 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST https://y4006948.com/login \
 > 代价：如果访客所在网络把 `challenges.cloudflare.com` 整个屏蔽了，登录页会提示「人机验证组件没加载出来」，
 > 这种网络下无法登录（这是接第三方人机验证的固有成本）。真要兜住，只能把这两把 key 留空关掉验证，
 > 或者让这类访客走 `.onion`。
+
+### 访客卡在「验证失败 / 故障排除」时怎么查（错误码 300010）
+
+先定性：`300*`、`600*` 是**客户端**错误（CF 的「通用挑战失败」），表示 Turnstile 组件在访客浏览器里
+**没跑完**，此时本站**根本没收到 token**——服务端那条「没拿到人机验证结果」的提示是结果，不是原因。
+它和 `110200`（域名不在白名单）、`110100/400020`（sitekey 错）不是一类，别往 key 上瞎找。
+
+按命中率从高到低排：
+
+1. **访客自己的浏览器环境**（最常见）：广告拦截 / 隐私扩展（uBlock、Brave Shields）挡掉
+   `challenges.cloudflare.com`；Safari「隐藏 IP 地址」；设备时间不准。让他开**无痕窗口**再试，
+   能过就是扩展问题；Safari 要关「设置 → 隐私 → 隐藏 IP 地址」。
+2. **VPN / 代理 / 非常规出口**：本站 CF 有一条「国外NP访问」规则——主机名含 `y4006948.com` 且国家
+   不含 `HK,CN,T1` → **托管质询**，而且**没限方法**。人只要从境外出口访问，就会先被 CF 挑战页拦一次，
+   进来再被 Turnstile 验证一次，两层叠加非常容易触发「挑战循环」。修法见上面第 4 步：
+   给那条规则加 `and http.request.method eq "GET"`，或者干脆把 `/login` 从这条规则里排除
+   ——登录页本身已经有 Turnstile 了，不需要 CF 再质询一遍。
+3. **本站配置**：Turnstile 小组件 Settings → Hostname Management 里必须有 `y4006948.com`（`www` 也要）。
+   这个配错一般报 `110200`，但域名/账号对不上时也会以 `300010` 的面目出现。
+4. **CF 侧故障**：以上都排除、且多台设备同时出问题，去看 Cloudflare Status。
+   这种时候只能等，本站能做的是不把用户彻底关死——极端情况下让他走 `.onion` 入口（不走 Turnstile）。
+
+代码侧为此做的三件事（`templates/login.html` + `login()`）：
+
+- 提交时**不再无条件 `reset()`**。以前先 reset 再 execute，等于把刚拿到的 token 作废、再白跑一次挑战，
+  很容易被判成异常；现在「有 token 就直接交」，只在失败重试时才 reset。
+- 接上了 `error-callback` / `timeout-callback` / `unsupported-callback`，把 `300010` 之类的码
+  **翻成一句人话**（点名「广告拦截 / VPN / 网络」），不再只丢一句「验证未通过」。
+- 首次失败**自动重试一次**（reset + execute，再等 8 秒），仍失败才提示；等待从 4 秒放宽到 8 秒，
+  CF 弹点击框时照旧等用户点完（上限 60 秒）。
+- 服务端把两种失败分开提示：没拿到 token → 「没拿到人机验证结果」；拿到但没通过 → 「人机验证未通过」。
 
 ### 隐私政策及社区准则（`/privacy`）
 
@@ -512,7 +697,7 @@ python app.py
 
 ---
 
-## 前端两条铁律（踩过坑，别再犯）
+## 前端几条铁律（踩过坑，别再犯）
 
 1. **表单字段不要叫 `action`、`submit`、`method`、`id` 这类名字**。
    HTML 规范里表单里的同名输入框会**顶替** `form.action` / `form.submit` 等属性：
@@ -521,10 +706,15 @@ python app.py
    置顶按钮就栽在这上面（删除没事，因为它的表单没有这个字段，所以现象是"删除正常、置顶抽风"）。
    - 置顶的隐藏字段已改名 `pin_act`；服务端 `set_pin` 仍兼容旧的 `action` 字段。
    - 前端统一用 `form.getAttribute('action')` 取地址，不用 `form.action`。
-2. **同一段 `<script>` 里不要重复声明同名变量**（比如两处 `const postForm`）：
+   - v6 起再加一层：AJAX 取地址用 `form.dataset.api || form.getAttribute('action')`，
+     `action` 留给无 JS 的普通表单，`data-api` 指向 `/api/...`。
+2. **接口返回体只看 `{ok, code, msg, data}`**（v6）：成功数据在 `data`，失败提示在 `msg`，
+   判断分支用 `code`，别再往顶层塞业务字段，也别在模板里读 `data.error`（那是旧形状，
+   前端只是留着兼容）。新增接口照 `app.py` 里 `api_ok` / `ApiError` 的写法来。
+3. **同一段 `<script>` 里不要重复声明同名变量**（比如两处 `const postForm`）：
    整段脚本直接语法失败，表现是"日志干净、页面能加载、所有按钮全死"。
    改完模板用 `node --check` 跑一遍（`<script>` 内容抽出来、Jinja 标签替换掉即可）。
-3. **要在前端切换显示的元素，必须始终渲染在 DOM 里**（默认加 `d-none`），
+4. **要在前端切换显示的元素，必须始终渲染在 DOM 里**（默认加 `d-none`），
    不要用 `{% if %}` 让它"不置顶时压根不存在"：`card.querySelector('.pin-badge')`
    会返回 `null`，`null.classList` 直接抛 `Cannot read properties of null`。
    置顶徽标就踩过这个坑（接口已经成功、界面报错，看起来像接口又坏了）。
@@ -570,6 +760,15 @@ python app.py
   超过一页才显示「上一页 / 下一页」，总数不足一页时界面与以前完全一致。
   在第 2 页及以后发帖，前端会跳回第 1 页，让你看到刚发的那条（新帖属于最新一页）。
 - **置顶**：仅管理员可用，最多 3 条，置顶帖按置顶时间倒序排在最前。
+  置顶按钮**只对管理员渲染**（服务端 `{% if is_admin %}` + 前端克隆卡片时移除），
+  普通用户看不到它，不会再出现「点了提示没权限」的按钮。
+- **删帖 / 删回复**：**作者可以删自己发的帖子和回复**，管理员可以删任何内容。
+  权限按库里的真实 `user_id` 判断（匿名帖、匿名回复同样知道自己是谁），
+  别人想删只会拿到 403「只能删除自己发的帖子 / 回复」。新建的帖子与回复是克隆进列表的，
+  那条的删除按钮天然属于作者，前端不再对非管理员统一隐藏删除。
+- **长贴折叠**：正文渲染后超过 **340px** 高度就先收起，底部做白色渐变，
+  下面给一个「展开全文」链接，点开后变成「收起」；图片在正文之外，**不参与折叠**，
+  始终完整显示。新发/新收到的帖子也会立即套用同一套折叠判断。
 - **管理员管理**：超级管理员为学号 `25710202061`（注册时自动获得权限，永久不可被取消）。
   管理员登录后首页右上角只有一个「管理」下拉，里面是「管理员」和「题库管理」两项，不再占两个按钮位。
   点「管理员」进入 `/admin/admins`：输入对方 11 位学号即可提拔管理员，
