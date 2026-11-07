@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}阅读并同意 · three职校园墙{% endblock %}
+
+{% block content %}
+<!-- 背景只放一句提示：真正的交互在被强制弹出的窗口里，关不掉、跳不过 -->
+<div class="app-container px-3 pt-4 pb-1">
+  <div class="card rounded-4 shadow-sm border-0 w-100" style="max-width:400px;margin:0 auto;">
+    <div class="card-body p-4 text-center">
+      <h5 class="fw-bold mb-2">注册前，请先读一遍</h5>
+      <p class="text-muted small mb-3">
+        新账号第一次注册需要确认《隐私政策及社区准则》。读完后勾选，才能进入答题。
+      </p>
+      <a href="{{ url_for('login') }}" class="btn btn-light border btn-sm">返回登录</a>
+    </div>
+  </div>
+</div>
+
+<form method="post" action="{{ url_for('register_agree') }}" id="agree-form">
+  <input type="hidden" name="agree" value="1">
+</form>
+
+<div class="modal fade" id="agree-modal" data-bs-backdrop="static" data-bs-keyboard="false"
+     tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-scrollable modal-dialog-centered" style="max-width:600px;">
+    <div class="modal-content rounded-4 border-0">
+      <div class="modal-header border-0 pb-1">
+        <h6 class="modal-title fw-bold">隐私政策及社区准则</h6>
+      </div>
+      <div class="modal-body pt-2" id="agree-body">
+        {% include "_policy.html" %}
+      </div>
+      <div class="modal-footer border-0 pt-2 flex-column align-items-stretch gap-2">
+        <div class="text-muted" style="font-size:.78rem;" id="agree-hint">
+          继续向下滚动，读完最后一行才能勾选
+        </div>
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" id="agree-check" disabled>
+          <label class="form-check-label small" for="agree-check">
+            我已阅读并同意《隐私政策及社区准则》
+          </label>
+        </div>
+        <button type="button" class="btn btn-wechat w-100 py-2" id="agree-next" disabled>
+          我知道了
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<noscript>
+  <div class="app-container px-3 pb-4">
+    <div class="card rounded-4 border-0 shadow-sm">
+      <div class="card-body p-4 small">
+        <p class="mb-3">你的浏览器关闭了脚本，条款没能弹出来。请直接阅读
+          <a href="{{ url_for('privacy') }}">《隐私政策及社区准则》</a> 全文，然后勾选下面的选项继续。</p>
+        <form method="post" action="{{ url_for('register_agree') }}">
+          <input type="hidden" name="agree" value="1">
+          <div class="form-check mb-3">
+            <input class="form-check-input" type="checkbox" id="noscript-agree" required>
+            <label class="form-check-label" for="noscript-agree">我已阅读并同意《隐私政策及社区准则》</label>
+          </div>
+          <button type="submit" class="btn btn-wechat">开始答题</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</noscript>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const modalEl = document.getElementById('agree-modal');
+  const body = document.getElementById('agree-body');
+  const hint = document.getElementById('agree-hint');
+  const check = document.getElementById('agree-check');
+  const next = document.getElementById('agree-next');
+  const form = document.getElementById('agree-form');
+  if (!modalEl || !body) return;
+
+  // 滚到底才解锁：留 8px 容差，避免某些浏览器 1px 的小数误差卡住按钮
+  function unlockIfAtBottom() {
+    if (!check.disabled) return;
+    if (body.scrollTop + body.clientHeight >= body.scrollHeight - 8) {
+      check.disabled = false;
+      hint.textContent = '已读到底部，可以勾选了';
+      hint.className = 'text-success';
+      hint.style.fontSize = '.78rem';
+    }
+  }
+
+  bootstrap.Modal.getOrCreateInstance(modalEl, {
+    backdrop: 'static',
+    keyboard: false
+  }).show();
+
+  body.addEventListener('scroll', unlockIfAtBottom);
+  // 内容不够长、压根滚不动的极端情况：打开后直接解锁
+  setTimeout(unlockIfAtBottom, 300);
+
+  check.addEventListener('change', function () {
+    next.disabled = !check.checked;
+  });
+
+  next.addEventListener('click', function () {
+    if (!check.checked) {
+      showToast('请先勾选「我已阅读并同意」', 'danger');
+      return;
+    }
+    next.disabled = true;
+    form.submit();
+  });
+})();
+</script>
+{% endblock %}

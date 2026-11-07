@@ -1,14 +1,30 @@
 [Unit]
 Description=Campus Wall Gunicorn Daemon
 After=network.target
+# 只有这一份单元允许存在。曾经用过 campus_wall.service（下划线），
+# 改名后必须 `systemctl disable --now campus_wall` 并删除旧文件，
+# 否则旧单元会一直占着 127.0.0.1:5000，用老代码应答请求。
+# 启动失败不要无限重试：60 秒内失败 3 次就停下并标成 failed。
+# 没有这两条时，端口被旧进程占着会变成「启动→退出→3 秒后重试」的死循环，
+# systemctl status 在重试间隙里显示 active (running)，看起来像在跑，实际一个请求都没接。
+StartLimitIntervalSec=60
+StartLimitBurst=3
 
 [Service]
 User=root
 Group=root
 WorkingDirectory=/home/campus-wall
 Environment="PATH=/home/campus-wall/.venv/bin"
-ExecStart=/bin/bash -c 'export SECRET_KEY="$(python3 -c "import secrets;print(secrets.token_hex(32))")"; exec /home/campus-wall/.venv/bin/gunicorn -w 2 -b 127.0.0.1:5000 --access-logfile /dev/null app:app'
+# 数据库连接与 SECRET_KEY 全部来自这个文件；两台 Web 的内容必须完全一致。
+# 绝不要在单元里用命令随机生成 SECRET_KEY：那样每次重启都会让所有人掉登录，
+# 两台机器之间也会互相不认对方的 Session。
+EnvironmentFile=/home/campus-wall/campus_wall.env
+# 开跑前先确认 5000 没被别人占着：占着就直接失败并在 journal 里说清楚，
+# 而不是让 gunicorn 自己去撞（它的报错会被 Restart 循环淹掉）。
+ExecStartPre=/bin/sh -c "ss -lntp 2>/dev/null | grep -q ':5000 ' && { echo '[campus-wall] 端口 5000 已被其他进程占用，请先 kill 掉它'; exit 1; } || true"
+ExecStart=/home/campus-wall/.venv/bin/gunicorn -w 2 -b 127.0.0.1:5000 --access-logfile /dev/null app:app
 Restart=always
+RestartSec=3
 
 [Install]
 WantedBy=multi-user.target

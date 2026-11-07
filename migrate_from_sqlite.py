@@ -22,6 +22,34 @@ import pymysql
 from pymysql.cursors import DictCursor
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+
+
+def load_env_file(path=None):
+    """与 app.py 相同的 env 读取：已存在的环境变量优先，文件只补缺失项。"""
+    path = path or os.path.join(BASE_DIR, "campus_wall.env")
+    if not os.path.isfile(path):
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("export "):
+                    line = line[7:].strip()
+                if "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key, value = key.strip(), value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                    value = value[1:-1]
+                os.environ.setdefault(key, value)
+    except OSError:
+        pass
+
+
+load_env_file()
+
 DB_HOST = os.environ.get("DB_HOST", "127.0.0.1")
 DB_PORT = int(os.environ.get("DB_PORT", "3306"))
 DB_USER = os.environ.get("DB_USER", "campus_wall")

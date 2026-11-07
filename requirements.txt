@@ -4,3 +4,5 @@ Flask>=3.0,<4.0
 Markdown>=3.5
 bleach>=6.0
 PyMySQL>=1.1
+# 生产入口：gunicorn 是运行必需，漏装会让 systemd 服务起不来（报 gunicorn: No such file）
+gunicorn>=21.2

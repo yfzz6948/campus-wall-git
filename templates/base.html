@@ -43,6 +43,25 @@
       background: #f3f3f3; padding: .1rem .3rem; border-radius: .25rem;
       font-size: .88em; color: #c7254e;
     }
+    /* Markdown 排版类元素在手机宽度下的收敛尺寸 */
+    .post-body pre {
+      background: #f6f6f6; padding: .5rem .6rem; border-radius: .35rem;
+      overflow-x: auto; margin-bottom: .5rem; font-size: .85em; white-space: pre;
+    }
+    .post-body pre code { background: none; padding: 0; color: #333; }
+    .post-body h1, .post-body h2 { font-size: 1.1rem; font-weight: 600; margin: .6rem 0 .3rem; }
+    .post-body h3, .post-body h4,
+    .post-body h5, .post-body h6 { font-size: 1rem; font-weight: 600; margin: .5rem 0 .25rem; }
+    .post-body ul, .post-body ol { padding-left: 1.2rem; margin-bottom: .4rem; }
+    .post-body blockquote {
+      border-left: 3px solid #e2e2e2; padding-left: .6rem;
+      color: #6c6c6c; margin: .4rem 0;
+    }
+    .post-body hr { margin: .6rem 0; border-top: 1px solid #eee; opacity: 1; }
+    .post-body table { width: 100%; font-size: .85em; margin-bottom: .5rem; }
+    .post-body table th, .post-body table td {
+      border: 1px solid #e8e8e8; padding: .2rem .35rem; vertical-align: top;
+    }
 
     /* 回复浅灰区 */
     .reply-box { background: #f7f7f7; }
@@ -58,8 +77,48 @@
       height: auto;
     }
 
+    /* ---------- 站内轻提示（替代浏览器 alert，放底部避开顶部 flash） ---------- */
+    .cw-toast-stack {
+      position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%);
+      z-index: 1090; width: calc(100% - 1.5rem); max-width: 420px;
+      display: flex; flex-direction: column; gap: .5rem; pointer-events: none;
+    }
+    .cw-toast-item {
+      background: rgba(33, 37, 41, .94); color: #fff; border-radius: .6rem;
+      padding: .55rem .8rem; font-size: .86rem; line-height: 1.45;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, .18);
+      transition: opacity .35s ease, transform .35s ease;
+      word-break: break-word;
+    }
+    .cw-toast-item.danger { background: rgba(190, 33, 48, .96); }
+    .cw-toast-item.success { background: rgba(22, 128, 79, .96); }
+
     footer a {
       text-decoration: none;
+    }
+    /* 页脚收紧：三行贴在一起，不再各占一块高度 */
+    .cw-footer { line-height: 1.4; }
+    .cw-footer-line { margin: 0; }
+
+    /* ---------- 发帖框底部工具条 ---------- */
+    /* 手机上一行放不下「添加图片 / 匿名 / 计数 / 存为草稿 / 发表」，
+       默认 flex-wrap 会把「发表」甩到第二行。这里在窄屏收紧内边距和字号，
+       并强制不换行，保证永远是一行。 */
+    .post-actions { flex-wrap: nowrap; }
+    .post-actions > * { min-width: 0; }
+    .post-actions .btn,
+    .post-actions .form-check-label,
+    .post-actions .form-check-input { flex-shrink: 0; }
+    @media (max-width: 575.98px) {
+      .post-actions .btn {
+        --bs-btn-padding-y: .22rem;
+        --bs-btn-padding-x: .45rem;
+        --bs-btn-font-size: .8rem;
+      }
+      .post-actions .form-check-label { font-size: .8rem; }
+      .post-actions .text-muted.small { font-size: .72rem; }
+      /* 文件名提示在手机上没地方放，靠下方的预览图就够了 */
+      .post-actions #image-tip { display: none; }
     }
   </style>
 </head>
@@ -68,11 +127,13 @@
   {% block content %}{% endblock %}
 {% endblock %}
 
-<footer class="app-container text-center text-muted small py-4 px-3">
-  <div>校园信息墙 · 自由交流平台</div>
-  <div class="mt-1" style="font-size: 0.75rem;">
-    <span>Powered by Flask & MariaDB</span>
-  </div>
+<!-- ========== 全局通用页脚 ========== -->
+<footer class="app-container text-center text-muted small pt-1 pb-4 px-3 cw-footer">
+  <a href="https://travel.moe/go.html" target="_blank" class="d-inline-block mb-1">
+    <img src="https://travel.moe/images/logo/default-dark.png" style="width:auto;height:20px" title="异次元之旅-跃迁-我们一起去萌站成员的星球旅行吧！">
+  </a>
+  <div class="cw-footer-line"><a href="https://icp.gov.moe/?keyword=20261214" target="_blank">萌ICP备20261214号</a><span class="mx-1">·</span><a href="{{ url_for('privacy') }}">隐私政策及社区准则</a></div>
+  <div class="cw-footer-line" style="font-size: 0.72rem;"><span>Powered by Flask &amp; MariaDB</span><span class="ms-1" style="opacity:.55;">v{{ build }}</span></div>
 </footer>
 
 <!-- 全局浮动提示（flash） -->
@@ -88,7 +149,81 @@
   {% endwith %}
 </div>
 
-<script src="<script src="{{ url_for('static', filename='bootstrap.bundle.min.js') }}"></script>"></script>
+<!-- 站内确认弹窗（替代浏览器 confirm） -->
+<div class="modal fade" id="cw-confirm" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-sm" style="max-width:340px;">
+    <div class="modal-content rounded-4 border-0 shadow">
+      <div class="modal-body text-center pt-4 pb-2 px-4">
+        <div class="cw-confirm-text" style="white-space:pre-line;"></div>
+      </div>
+      <div class="modal-footer border-0 pt-1 pb-3 px-3 justify-content-center gap-2">
+        <button type="button" class="btn btn-light border px-4" id="cw-confirm-cancel"
+                data-bs-dismiss="modal">取消</button>
+        <button type="button" class="btn btn-danger px-4" id="cw-confirm-ok">确定</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 站内轻提示容器 -->
+<div class="cw-toast-stack" id="cw-toast-stack" aria-live="polite"></div>
+
+<script src="{{ url_for('static', filename='bootstrap.bundle.min.js') }}"></script>
+<script>
+  /* ---------- 站内提示：替代 alert，自动消失、不打断操作 ---------- */
+  function showToast(message, type) {
+    const stack = document.getElementById('cw-toast-stack');
+    if (!stack) return;
+    const item = document.createElement('div');
+    item.className = 'cw-toast-item' + (type ? ' ' + type : '');
+    item.textContent = message;
+    stack.appendChild(item);
+    // 同时最多 3 条，多了先撤最早的
+    while (stack.children.length > 3) stack.firstElementChild.remove();
+    setTimeout(() => {
+      item.style.opacity = '0';
+      item.style.transform = 'translateY(6px)';
+    }, 2200);
+    setTimeout(() => item.remove(), 2600);
+  }
+
+  /* ---------- 站内确认：替代 confirm，返回 Promise<boolean> ---------- */
+  let cwConfirmResolve = null;
+
+  function confirmDialog(message, okText) {
+    const el = document.getElementById('cw-confirm');
+    if (!el) { console.warn('确认弹窗缺失'); return Promise.resolve(false); }
+    el.querySelector('.cw-confirm-text').textContent = message;
+    document.getElementById('cw-confirm-ok').textContent = okText || '确定';
+    if (cwConfirmResolve) { cwConfirmResolve(false); cwConfirmResolve = null; }
+    return new Promise((resolve) => {
+      cwConfirmResolve = resolve;
+      bootstrap.Modal.getOrCreateInstance(el).show();
+    });
+  }
+
+  document.getElementById('cw-confirm-ok').addEventListener('click', () => {
+    const resolve = cwConfirmResolve;
+    cwConfirmResolve = null;
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('cw-confirm')).hide();
+    if (resolve) resolve(true);
+  });
+
+  document.getElementById('cw-confirm').addEventListener('hidden.bs.modal', () => {
+    if (cwConfirmResolve) { cwConfirmResolve(false); cwConfirmResolve = null; }
+  });
+
+  /* 普通表单加 data-confirm="提示文字" 就走站内弹窗，不必再写内联 confirm */
+  document.addEventListener('submit', async (e) => {
+    const form = e.target;
+    if (!form.dataset || !form.dataset.confirm || form.dataset.cwConfirmed === '1') return;
+    e.preventDefault();
+    const ok = await confirmDialog(form.dataset.confirm, form.dataset.confirmOk);
+    if (!ok) return;
+    form.dataset.cwConfirmed = '1';
+    form.submit();
+  });
+</script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

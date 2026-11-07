@@ -30,7 +30,8 @@
         <a class="btn btn-outline-primary btn-xs"
            href="{{ url_for('admin_question_edit', qid=q.id) }}">编辑</a>
         <form method="post" action="{{ url_for('admin_question_delete', qid=q.id) }}"
-              onsubmit="return confirm('确定删除这道题吗？');">
+              data-confirm="确定删除这道题吗？删除后不再参与随机抽题。"
+              data-confirm-ok="删除">
           <button type="submit" class="btn btn-outline-danger btn-xs">删除</button>
         </form>
       </div>

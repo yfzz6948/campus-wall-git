@@ -3,18 +3,25 @@
 {% block content %}
 <!-- 顶部栏 -->
 <header class="topbar sticky-top">
-  <div class="app-container d-flex align-items-center px-3 py-2">
-    <span class="fw-bold fs-5">校园信息墙</span>
+  <div class="app-container d-flex align-items-center gap-2 px-3 py-2">
+    <!-- me-auto 把标题之外的按钮一律推到右边：管理员按钮缺席时"退出"也不会飞到标题旁 -->
+    <span class="fw-bold fs-5 me-auto text-nowrap">深three职校园墙</span>
     {% if is_admin %}
-    <a class="btn btn-outline-primary btn-sm me-2"
-       href="{{ url_for('admin_questions') }}">题库管理</a>
-    <a class="btn btn-outline-primary btn-sm me-2"
-       href="{{ url_for('admin_admins') }}">管理员</a>
+    <!-- 管理员入口合并成一个下拉，只占一个位置 -->
+    <div class="dropdown">
+      <button class="btn btn-outline-primary btn-sm dropdown-toggle" type="button"
+              id="admin-menu" data-bs-toggle="dropdown" aria-expanded="false">管理</button>
+      <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="admin-menu">
+        <li><a class="dropdown-item" href="{{ url_for('admin_admins') }}">管理员</a></li>
+        <li><a class="dropdown-item" href="{{ url_for('admin_questions') }}">题库管理</a></li>
+      </ul>
+    </div>
     {% endif %}
-    <span class="ms-auto text-muted small me-2 d-none d-sm-inline">
+    <span class="text-muted small d-none d-md-inline text-nowrap">
       {{ session.grade }}{{ session.class_name }} {{ session.name }}
     </span>
-    <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('logout') }}">退出</a>
+    <a class="btn btn-outline-secondary btn-sm text-nowrap" href="{{ url_for('drafts_list') }}">草稿箱</a>
+    <a class="btn btn-outline-secondary btn-sm text-nowrap" href="{{ url_for('logout') }}">退出</a>
   </div>
 </header>
 
@@ -26,8 +33,8 @@
       <form id="post-form" method="post" action="{{ url_for('create_post') }}"
             enctype="multipart/form-data">
         <textarea class="form-control border-0 shadow-none" id="post-content"
-                  name="content" rows="3" maxlength="2000"
-                  placeholder="这一刻的想法…（支持Markdown语法，如**粗体** *斜体* `代码`）"></textarea>
+                  name="content" rows="5" maxlength="2000"
+                  placeholder="请输入文本…&#10;支持Markdown语法，如**粗体**、`代码`、[文字](链接)&#10;右下角可调节输入框大小"></textarea>
 
         <!-- 图片预览 -->
         <div id="image-preview-wrap" class="mt-2 d-none position-relative d-inline-block">
@@ -39,7 +46,7 @@
           </button>
         </div>
 
-        <div class="d-flex align-items-center flex-wrap gap-2 mt-2">
+        <div class="post-actions d-flex align-items-center gap-2 mt-2">
           <!-- 单图上传：无 multiple，accept 限定图片 -->
           <label class="btn btn-outline-secondary btn-sm mb-0">
             添加图片
@@ -47,14 +54,17 @@
                    accept="image/png,image/jpeg,image/gif,image/webp"
                    class="d-none">
           </label>
-          <span id="image-tip" class="text-muted small"></span>
+          <span id="image-tip" class="text-muted small text-truncate"></span>
 
-          <div class="form-check mb-0 ms-auto">
+          <!-- 字数计数起头，右侧依次是「存为草稿 / 匿名 / 发表」 -->
+          <span class="text-muted small ms-auto" id="char-count">0/2000</span>
+          <!-- 存为草稿：只存文字，不存图片；草稿箱最多 3 条 -->
+          <button type="button" class="btn btn-outline-secondary btn-sm" id="save-draft">存为草稿</button>
+          <div class="form-check mb-0">
             <input class="form-check-input" type="checkbox" name="is_anonymous"
                    value="1" id="anonymous-check">
             <label class="form-check-label small" for="anonymous-check">匿名</label>
           </div>
-          <span class="text-muted small" id="char-count">0/2000</span>
           <button type="submit" class="btn btn-wechat btn-sm">发表</button>
         </div>
       </form>
@@ -62,9 +72,11 @@
   </section>
 
   <!-- 空状态 -->
+  {% if not posts %}
   <div id="empty-tip" class="text-center text-muted py-5">
     还没有动态，快来发第一条吧～
   </div>
+  {% endif %}
 
   <!-- 帖子时间线（服务端渲染，最新在前） -->
   <section id="post-list">
@@ -82,7 +94,7 @@
             <div class="fw-semibold lh-sm">
               {{ p.grade }}{{ p.class_name }}
               {% if p.is_anonymous %}<span class="text-danger">***</span>{% else %}{{ p.name }}{% endif %}
-              {% if p.is_pinned %}<span class="badge text-bg-warning align-middle ms-1 pin-badge">置顶</span>{% endif %}
+              {% if p.is_pinned %}<span class="badge text-bg-warning align-middle ms-1 pin-badge">置顶</span>{% else %}<span class="badge text-bg-warning align-middle ms-1 pin-badge d-none">置顶</span>{% endif %}
             </div>
           </div>
           <div class="text-end ms-2">
@@ -90,7 +102,7 @@
             {% if is_admin %}
             <form class="d-inline js-pin mt-1" method="post"
                   action="{{ url_for('set_pin', post_id=p.id) }}">
-              <input type="hidden" name="action" value="{{ 'unpin' if p.is_pinned else 'pin' }}">
+              <input type="hidden" name="pin_act" value="{{ 'unpin' if p.is_pinned else 'pin' }}">
               {% if p.is_pinned %}
               <button type="submit" class="btn btn-outline-secondary btn-xs pin-btn">取消置顶</button>
               {% else %}
@@ -124,7 +136,7 @@
           <div class="reply-item" data-reply-id="{{ r.id }}">
             <div class="small">
               <span class="fw-semibold text-primary-emphasis">
-                {{ r.grade }}{{ r.class_name }} {{ r.name }}
+                {% if r.is_anonymous %}***{% else %}{{ r.grade }}{{ r.class_name }} {{ r.name }}{% endif %}
               </span>：{{ r.content }}
             </div>
             <div class="text-muted" style="font-size:.72rem;">
@@ -142,11 +154,14 @@
         </div>
 
         <!-- 回复框（纯文本） -->
-        <form class="reply-form d-flex gap-2 mt-2" method="post"
+        <form class="reply-form d-flex align-items-center gap-2 mt-2" method="post"
               action="{{ url_for('create_reply', post_id=p.id) }}"
               data-post-id="{{ p.id }}">
           <input type="text" name="content" class="form-control form-control-sm"
                  placeholder="回复…" required maxlength="200">
+          <label class="form-check m-0 flex-shrink-0 small text-muted" title="匿名回复不显示姓名">
+            <input class="form-check-input" type="checkbox" name="is_anonymous" value="1">匿
+          </label>
           <button type="submit" class="btn btn-wechat btn-sm flex-shrink-0">回复</button>
         </form>
 
@@ -154,6 +169,25 @@
     </article>
     {% endfor %}
   </section>
+
+  <!-- 分页：一页 15 条，只影响帖子列表，不重发图片和回复 -->
+  {% if pages > 1 %}
+  <nav class="d-flex align-items-center justify-content-center gap-3 my-4" aria-label="分页">
+    {% if page > 1 %}
+    <a class="btn btn-outline-secondary btn-sm text-nowrap"
+       href="{{ url_for('index', page=page - 1) }}" rel="prev">上一页</a>
+    {% else %}
+    <button class="btn btn-outline-secondary btn-sm text-nowrap" type="button" disabled>上一页</button>
+    {% endif %}
+    <span class="text-muted small text-nowrap">{{ page }} / {{ pages }}</span>
+    {% if page < pages %}
+    <a class="btn btn-outline-secondary btn-sm text-nowrap"
+       href="{{ url_for('index', page=page + 1) }}" rel="next">下一页</a>
+    {% else %}
+    <button class="btn btn-outline-secondary btn-sm text-nowrap" type="button" disabled>下一页</button>
+    {% endif %}
+  </nav>
+  {% endif %}
 </main>
 
 <!-- ========== AJAX 克隆模板，结构与服务端卡片一致 ========== -->
@@ -171,7 +205,7 @@
         <div class="text-end ms-2">
           <div class="text-muted small post-time"></div>
           <form class="d-inline js-pin mt-1" method="post" action="">
-            <input type="hidden" name="action" value="pin">
+            <input type="hidden" name="pin_act" value="pin">
             <button type="submit" class="btn btn-outline-warning btn-xs pin-btn">置顶</button>
           </form>
           <form class="d-inline js-delete-post mt-1" method="post" action="">
@@ -183,9 +217,12 @@
       <img class="post-image img-fluid rounded mt-1 d-none"
            alt="帖子图片" loading="lazy" referrerpolicy="no-referrer">
       <div class="reply-box rounded-3 p-2 mt-2 empty"></div>
-      <form class="reply-form d-flex gap-2 mt-2" method="post" action="" data-post-id="">
+      <form class="reply-form d-flex align-items-center gap-2 mt-2" method="post" action="" data-post-id="">
         <input type="text" name="content" class="form-control form-control-sm"
                placeholder="回复…" required maxlength="200">
+        <label class="form-check m-0 flex-shrink-0 small text-muted" title="匿名回复不显示姓名">
+          <input class="form-check-input" type="checkbox" name="is_anonymous" value="1">匿
+        </label>
         <button type="submit" class="btn btn-wechat btn-sm flex-shrink-0">回复</button>
       </form>
     </div>
@@ -211,8 +248,10 @@
 {% block scripts %}
 <script>
   const IS_ADMIN = {{ 'true' if is_admin else 'false' }};
+  const CURRENT_PAGE = {{ page }};
+  const CW_BUILD = "{{ build }}";     // 这一页是哪个版本渲染的，用来发现旧缓存
   const POST_MAX = 2000;
-  const IMG_MAX = 5 * 1024 * 1024;
+  const IMG_MAX = 10 * 1024 * 1024;   // 与后端 MAX_IMAGE_SIZE 保持一致
 
   const postForm = document.getElementById('post-form');
   const imageInput = document.getElementById('image-input');
@@ -227,13 +266,13 @@
     const file = imageInput.files[0];
     if (!file) { resetImagePreview(); return; }
     if (!file.type.startsWith('image/')) {
-      alert('只能上传图片（JPG / PNG / GIF / WEBP），暂不支持视频或附件');
+      showToast('只能上传图片（JPG / PNG / GIF / WEBP），暂不支持视频或附件', 'danger');
       imageInput.value = '';
       resetImagePreview();
       return;
     }
     if (file.size > IMG_MAX) {
-      alert('图片大小不能超过 5MB');
+      showToast('图片大小不能超过 10MB', 'danger');
       imageInput.value = '';
       resetImagePreview();
       return;
@@ -248,6 +287,48 @@
     resetImagePreview();
   });
 
+  // ---------- 粘贴 / 拖拽图片：塞进同一个 file input，复用上面的校验与预览 ----------
+  function setImageFromBlob(file) {
+    if (!file) return;
+    const dt = new DataTransfer();
+    try { dt.items.add(file); } catch (e) { return; }   // 极老浏览器不支持构造，静默放弃
+    imageInput.files = dt.files;
+    imageInput.dispatchEvent(new Event('change'));
+  }
+
+  ta.addEventListener('paste', (e) => {
+    const items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+    // DataTransferItemList 只是类数组，不能 for...of，按下标遍历
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.kind === 'file' && item.type.indexOf('image/') === 0) {
+        const file = item.getAsFile();
+        if (file) { e.preventDefault(); setImageFromBlob(file); }
+        return;
+      }
+    }
+  });
+
+  ['dragenter', 'dragover'].forEach((type) => {
+    postForm.addEventListener(type, (e) => {
+      // 只接管"拖文件"，拖选中的文字仍然走浏览器默认行为
+      if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      ta.style.background = '#fffbe6';
+    });
+  });
+  ['dragleave', 'drop'].forEach((type) => {
+    postForm.addEventListener(type, () => { ta.style.background = ''; });
+  });
+  postForm.addEventListener('drop', (e) => {
+    if (!e.dataTransfer) return;
+    e.preventDefault();
+    const file = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (file) setImageFromBlob(file);
+  });
+
   function resetImagePreview() {
     imageTip.textContent = '';
     previewImg.src = '';
@@ -257,11 +338,39 @@
   function updateCount() { counter.textContent = `${ta.value.length}/${POST_MAX}`; }
   ta.addEventListener('input', updateCount);
 
+  // ---------- 存为草稿：不实时保存，点一下才往草稿箱存一条 ----------
+  const draftBtn = document.getElementById('save-draft');
+  draftBtn.addEventListener('click', async () => {
+    if (!ta.value.trim()) { showToast('草稿不能为空，先写点内容吧', 'danger'); return; }
+    const fd = new FormData();
+    fd.append('content', ta.value);
+    fd.append('is_anonymous',
+      document.getElementById('anonymous-check').checked ? '1' : '0');
+    draftBtn.disabled = true;
+    try {
+      const res = await fetch('{{ url_for("draft_save") }}', {
+        method: 'POST',
+        headers: { 'X-Requested-With': 'fetch' },
+        body: fd
+      });
+      const data = await parseJson(res);
+      ta.value = '';
+      imageInput.value = '';
+      resetImagePreview();
+      updateCount();
+      showToast(`已存入草稿箱（当前 ${data.count} 条，最多 3 条，超出自动删最早的）`, 'success');
+    } catch (err) { showToast(err.message, 'danger'); }
+    draftBtn.disabled = false;
+  });
+
   // ---------- AJAX 基础 ----------
   function submitForm(form) {
-    return fetch(form.action, {
+    // 用 getAttribute 而不是 form.action：表单里只要有个 name="action" 的输入框，
+    // `form.action` 就会被那个 input 顶替成对象，fetch 会去请求 /object HTMLInputElement
+    const url = form.getAttribute('action') || window.location.href;
+    return fetch(url, {
       method: 'POST',
-      headers: { 'X-Requested-With': 'fetch' },
+      headers: { 'X-Requested-With': 'fetch', 'Accept': 'application/json' },
       body: new FormData(form)   // multipart，自动带上图片
     });
   }
@@ -270,7 +379,21 @@
     let data = {};
     try { data = await res.json(); } catch (e) {}
     if (res.status === 401) { location.href = '/login'; throw new Error('登录已过期'); }
-    if (!res.ok || !data.ok) throw new Error(data.error || '操作失败，请重试');
+    // Cloudflare 人机验证拦截（AJAX 没法弹验证页，只能提示用户刷新页面过一次验证）
+    if (res.headers.get('cf-mitigated') === 'challenge') {
+      throw new Error('请求被 Cloudflare 人机验证拦截了，请刷新页面完成验证后再试');
+    }
+    // 被重定向到别的页面（登录失效、部署了两套代码等）：拿到的其实是网页，不是接口结果
+    if (res.redirected) throw new Error('请求被跳转到了其他页面，可能登录已失效，请刷新后重试');
+    // 页面版本和服务端版本不一致 → 浏览器/Cloudflare 给的是旧页面，先说清楚这件事
+    const srvBuild = res.headers.get('X-CW-Build');
+    if (srvBuild && CW_BUILD && srvBuild !== CW_BUILD) {
+      throw new Error(`页面是旧缓存（页面 v${CW_BUILD} / 服务器 v${srvBuild}），请按 Ctrl+F5 强刷`);
+    }
+    if (!res.ok || !data.ok) {
+      // 带上状态码：服务端没返回 JSON 时（403/404/500 或网关页），至少能看出是哪种失败
+      throw new Error(data.error || `操作失败（HTTP ${res.status}），请稍后重试`);
+    }
     return data;
   }
 
@@ -281,6 +404,9 @@
   }
 
   function addPostCard(p) {
+    // 拿不到 id 就别硬拼：卡片上的删除/置顶/回复地址全靠它，
+    // id 缺失会拼出 /posts/null/pin 这种地址，一点就是 404「内容不存在」
+    if (!p || !p.id) { location.reload(); return; }
     const node = document.getElementById('post-tpl').content.firstElementChild.cloneNode(true);
     node.dataset.postId = p.id;
     const avatar = node.querySelector('.p-avatar');
@@ -319,6 +445,7 @@
 
   function refreshEmpty() {
     const tip = document.getElementById('empty-tip');
+    if (!tip) return;      // 有帖子时模板里根本没有这个节点
     tip.style.display = document.querySelectorAll('#post-list .post-card').length ? 'none' : '';
   }
 
@@ -332,11 +459,14 @@
       btn.disabled = true;
       try {
         const data = await parseJson(await submitForm(form));
+        // 非第 1 页时新帖应该出现在首页最上面，直接跳回第 1 页看结果
+        if (CURRENT_PAGE > 1) { window.location.href = "{{ url_for('index') }}"; return; }
         addPostCard(data.post);
         form.reset();
         updateCount();
         resetImagePreview();
-      } catch (err) { alert(err.message); }
+        showToast('发布成功', 'success');
+      } catch (err) { showToast(err.message, 'danger'); }
       btn.disabled = false;
 
     } else if (form.classList.contains('reply-form')) {
@@ -347,28 +477,28 @@
         const data = await parseJson(await submitForm(form));
         addReply(form.closest('.post-card'), data.reply);
         form.reset();
-      } catch (err) { alert(err.message); }
+      } catch (err) { showToast(err.message, 'danger'); }
       btn.disabled = false;
 
     } else if (form.classList.contains('js-delete-post')) {
       e.preventDefault();
-      if (!confirm('确定删除这条帖子及其全部回复吗？')) return;
+      if (!(await confirmDialog('确定删除这条帖子及其全部回复吗？', '删除'))) return;
       try {
         await parseJson(await submitForm(form));
         form.closest('.post-card').remove();
         refreshEmpty();
-      } catch (err) { alert(err.message); }
+      } catch (err) { showToast(err.message, 'danger'); }
 
     } else if (form.classList.contains('js-delete-reply')) {
       e.preventDefault();
-      if (!confirm('确定删除这条回复吗？')) return;
+      if (!(await confirmDialog('确定删除这条回复吗？', '删除'))) return;
       try {
         await parseJson(await submitForm(form));
         const item = form.closest('.reply-item');
         const box = item.closest('.reply-box');
         item.remove();
         if (!box.querySelector('.reply-item')) box.classList.add('empty');
-      } catch (err) { alert(err.message); }
+      } catch (err) { showToast(err.message, 'danger'); }
 
     } else if (form.classList.contains('js-pin')) {
       e.preventDefault();
@@ -377,12 +507,14 @@
       btn.disabled = true;
       try {
         const data = await parseJson(await submitForm(form));
+        // 徽标必须始终存在于 DOM 里（未置顶时是 d-none），否则 toggle 会读到 null
+        const badge = card.querySelector('.pin-badge');
         if (data.pinned) {
           // 置顶：显示徽标、切换按钮、卡片移到最前（最新置顶排第一）
           card.dataset.pinned = '1';
           card.classList.add('border-warning', 'border-2');
-          card.querySelector('.pin-badge').classList.remove('d-none');
-          form.querySelector('input[name="action"]').value = 'unpin';
+          if (badge) badge.classList.remove('d-none');
+          form.querySelector('input[name="pin_act"]').value = 'unpin';
           btn.textContent = '取消置顶';
           btn.classList.remove('btn-outline-warning');
           btn.classList.add('btn-outline-secondary');
@@ -391,14 +523,14 @@
           // 取消置顶：隐藏徽标、切换按钮、按帖子 id 倒序插回普通区
           card.dataset.pinned = '0';
           card.classList.remove('border-warning', 'border-2');
-          card.querySelector('.pin-badge').classList.add('d-none');
-          form.querySelector('input[name="action"]').value = 'pin';
+          if (badge) badge.classList.add('d-none');
+          form.querySelector('input[name="pin_act"]').value = 'pin';
           btn.textContent = '置顶';
           btn.classList.remove('btn-outline-secondary');
           btn.classList.add('btn-outline-warning');
           reinsertUnpinned(card);
         }
-      } catch (err) { alert(err.message); }
+      } catch (err) { showToast(err.message, 'danger'); }
       btn.disabled = false;
     }
   });

@@ -1,59 +1,145 @@
 {% extends "base.html" %}
-{% block title %}登录 · 校园信息墙{% endblock %}
+{% block title %}登录 · three职校园墙{% endblock %}
 
 {% block content %}
-<div class="app-container d-flex align-items-center min-vh-100 px-3 py-4">
+<div class="app-container px-3 pt-4 pb-1">
     <div class="card rounded-4 shadow-sm border-0 w-100" style="max-width:400px;margin:0 auto;">
         <div class="card-body p-4">
             <div class="logo mb-3 text-center">
                 <img src="{{ url_for('static', filename='favicon.png') }}" alt="LOGO">
             </div>
-            <h4 class="text-center fw-bold mb-1">three职网页校墙v0.6预览版</h4>
+            <h4 class="text-center fw-bold mb-1">深three职网页墙v0.8预览版</h4>
             <p class="text-center text-muted small mb-4">
-                提供备注即可登录；首次登录需回答防外校验证题
+                提供备注即可登录；首次登录自动注册，需回答防外校验证题
             </p>
 
             <!-- 登录 / 注册入口 合一表单，前端正则与后端校验保持一致 -->
-            <form method="post" action="{{ url_for('login') }}">
+            <form method="post" action="{{ url_for('login') }}" id="login-form">
 
                 <div class="form-floating mb-3">
                     <input type="text" class="form-control" id="student_id" name="student_id"
                            placeholder="学号" required maxlength="11" inputmode="numeric"
-                           pattern="\d{11}" title="学号必须是 11 位纯数字"
+                           pattern="\d{11}" title="请检查你输入的学号是否正确"
                            autocomplete="username">
-                    <label for="student_id">学号（11 位数字）</label>
+                    <label for="student_id">学号</label>
                 </div>
 
                 <div class="form-floating mb-3">
                     <input type="text" class="form-control" id="grade" name="grade"
                            placeholder="年级" required maxlength="2" inputmode="numeric"
-                           pattern="\d{1,2}" title="年级为 1~2 位数字，例如 26">
-                    <label for="grade">年级（如 26）</label>
+                           pattern="\d{1,2}" title="年级为1~2位数字，例如26">
+                    <label for="grade">年级（如26）</label>
                 </div>
 
                 <div class="form-floating mb-3">
                     <input type="text" class="form-control" id="class_name" name="class_name"
                            placeholder="班级" required maxlength="10"
                            pattern="[一-龥A-Za-z0-9]{1,10}"
-                           title="班级为 1~10 位中文/数字/字母，例如 会计2、网络1">
-                    <label for="class_name">班级（如 汽修2）</label>
+                           title="班级为1~10位中文/数字/字母，例如 会计2、网络1">
+                    <label for="class_name">班级（如汽修2）</label>
                 </div>
 
                 <div class="form-floating mb-4">
                     <input type="text" class="form-control" id="name" name="name"
                            placeholder="姓名" required maxlength="4"
-                           pattern="[一-龥]{2,4}" title="姓名必须是 2~4 个中文字符"
+                           pattern="[一-龥]{2,4}" title="姓名须是2~4个中文字符，不支持昵称及特殊字符"
                            autocomplete="name">
-                    <label for="name">姓名（2~4 个中文字符）</label>
+                    <label for="name">姓名</label>
                 </div>
+
+                {% if turnstile_on %}
+                <!-- Turnstile 不可见模式：平时完全不占位置，只有 CF 觉得可疑时才在这里弹一次点击 -->
+                <div id="cw-turnstile" class="mb-1"></div>
+                <input type="hidden" name="cf-turnstile-response" id="ts-token">
+                {% endif %}
 
                 <button type="submit" class="btn btn-wechat w-100 py-2">进入校园墙</button>
             </form>
 
             <p class="text-center text-muted mt-3 mb-0" style="font-size:.75rem;">
-                学号与身份信息一经注册即永久绑定，无法自助更改，请三思而后填！
+                学号与身份信息一经注册即该学号被永久绑定，无法自助更改，请三思而后填！
             </p>
         </div>
     </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+{% if turnstile_on %}
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"
+        async defer></script>
+<script>
+(function () {
+  const SITE_KEY = "{{ turnstile_site_key }}";
+  const form = document.getElementById('login-form');
+  const box = document.getElementById('cw-turnstile');
+  const tokenInput = document.getElementById('ts-token');
+  let widgetId = null;
+  let token = '';
+  let submitting = false;   // 程序内提交时放行，避免再次拦自己
+  let interacting = false;  // CF 弹出点击框时，说明进度还在，别急着判失败
+
+  // 不可见模式：外观不可见，提交时才执行；正常用户全程无感
+  function renderWidget() {
+    if (!window.turnstile || widgetId !== null) return;
+    widgetId = window.turnstile.render(box, {
+      sitekey: SITE_KEY,
+      size: 'flexible',
+      appearance: 'interaction-only',
+      execution: 'execute',
+      'response-field': false,     // token 由我们自己写进隐藏域，别让组件再插一个同名字段
+      callback: function (t) { token = t; },
+      'error-callback': function () { token = ''; },
+      'expired-callback': function () { token = ''; },
+      'before-interactive-callback': function () {
+        interacting = true;
+        showToast('请按提示完成一次人机验证', 'warning');
+      },
+      'after-interactive-callback': function () { interacting = false; }
+    });
+  }
+  if (window.turnstile) renderWidget();
+  else window.addEventListener('load', renderWidget);
+
+  // 等 token：正常 200ms 内就回来；若 CF 弹了点击框，则一直等到用户点完（最长 60 秒）
+  function waitToken(ms) {
+    return new Promise(function (resolve) {
+      const t0 = Date.now();
+      const iv = setInterval(function () {
+        const spent = Date.now() - t0;
+        if (token || (!interacting && spent >= ms) || spent >= 60000) {
+          clearInterval(iv);
+          resolve(token);
+        }
+      }, 100);
+    });
+  }
+
+  form.addEventListener('submit', async function (e) {
+    if (submitting) return;           // 已放行，走原生提交
+    e.preventDefault();
+
+    if (!widgetId) {                  // 脚本没加载出来（内网屏蔽 / 断网）
+      showToast('人机验证组件没加载出来，请检查网络后刷新页面', 'danger');
+      return;
+    }
+    try { window.turnstile.reset(widgetId); } catch (err) {}
+    token = '';
+    interacting = false;
+    const btn = form.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    try { window.turnstile.execute(widgetId); } catch (err) {}
+    const t = await waitToken(4000);
+    btn.disabled = false;
+    if (!t) {
+      showToast('人机验证未通过，请重试', 'danger');
+      return;
+    }
+    tokenInput.value = t;
+    submitting = true;
+    HTMLFormElement.prototype.submit.call(form);   // 绕过 submit 事件，避免二次拦截
+  });
+})();
+</script>
+{% endif %}
 {% endblock %}

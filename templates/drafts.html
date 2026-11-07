@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}草稿箱 · three职校园墙{% endblock %}
+
+{% block content %}
+<header class="topbar sticky-top">
+  <div class="app-container d-flex align-items-center gap-2 px-3 py-2">
+    <span class="fw-bold fs-5 me-auto text-nowrap">草稿箱</span>
+    <a class="btn btn-outline-secondary btn-sm text-nowrap"
+       href="{{ url_for('index') }}">返回首页</a>
+  </div>
+</header>
+
+<main class="app-container px-2 px-sm-3 py-3">
+
+  <div class="alert alert-light border small py-2 mb-3">
+    每人最多保存 <strong>{{ max_drafts }}</strong> 条草稿，超出时自动删除最早的一条。
+    草稿只保存文字，图片不会一起存；实名/匿名可以在下面每条草稿里随时切换。
+    「发布」用的是输入框里当前的内容。
+  </div>
+
+  {% for d in drafts %}
+  <div class="card rounded-4 border-0 mb-3 post-card">
+    <div class="card-body p-3">
+      <div class="d-flex align-items-center mb-2">
+        <span class="text-muted small">保存于 {{ d.created_at | ftime }}</span>
+      </div>
+
+      <form method="post" action="{{ url_for('draft_update', draft_id=d.id) }}">
+        <textarea class="form-control form-control-sm" name="content"
+                  rows="4" maxlength="2000">{{ d.content }}</textarea>
+        <!-- 隐藏域固定发 0，勾选后额外发 1；两个一起提交，服务端按"是否含 1"判断 -->
+        <input type="hidden" name="is_anonymous" value="0">
+        <div class="post-actions d-flex align-items-center gap-2 mt-2">
+          <label class="form-check m-0 small text-muted">
+            <input class="form-check-input" type="checkbox" name="is_anonymous"
+                   value="1" {% if d.is_anonymous %}checked{% endif %}>
+            匿名发布
+          </label>
+          <button type="submit" class="btn btn-outline-secondary btn-sm ms-auto">保存修改</button>
+          <button type="submit" class="btn btn-wechat btn-sm"
+                  formaction="{{ url_for('draft_publish', draft_id=d.id) }}">发布</button>
+          <button type="submit" class="btn btn-outline-danger btn-sm js-draft-delete"
+                  formaction="{{ url_for('draft_delete', draft_id=d.id) }}">删除</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  {% else %}
+  <div class="text-center text-muted py-5">
+    草稿箱是空的。在首页发帖框里点「存为草稿」就会出现在这里。
+  </div>
+  {% endfor %}
+
+</main>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // 删除草稿：同一个表单里还有「保存修改」「发布」两个提交按钮，
+  // 所以只挂在删除按钮上，确认后再把 action 指到删除路由
+  document.querySelectorAll('.js-draft-delete').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const ok = await confirmDialog('删除这条草稿吗？删除后不可恢复。', '删除');
+      if (!ok) return;
+      btn.form.setAttribute('action', btn.getAttribute('formaction'));
+      btn.form.submit();
+    });
+  });
+</script>
+{% endblock %}
